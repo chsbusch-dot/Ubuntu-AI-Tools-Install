@@ -61,10 +61,32 @@ check_os() {
 install_base_dependencies() {
     print_header "Ensuring Base Dependencies are Installed"
     # These are required by various installation functions
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl git wget unzip lsb-release gnupg ca-certificates
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jq build-essential procps curl file git wget unzip lsb-release gnupg ca-certificates
     print_success "Base dependencies are present."
 }
 # --- Installation Functions ---
+
+# Function to prompt for new user creation
+prompt_for_new_user() {
+    read -p "Do you want to create a new dedicated user for this setup? [y/N]: " confirm_new_user
+    if [[ "$confirm_new_user" == "y" || "$confirm_new_user" == "Y" ]]; then
+        local username
+        read -p "Enter the new username [openclawuser]: " username
+        username=${username:-openclawuser}
+
+        if id "$username" &>/dev/null; then
+            print_info "User '$username' already exists. Skipping creation."
+        else
+            print_info "Creating user '$username'..."
+            sudo adduser "$username"
+            print_success "Standard user '$username' created successfully."
+        fi
+
+        echo -e "\n\e[1;33mIMPORTANT: To continue setup as the new user, you must log in as them.\e[0m"
+        print_info "Exiting script. Please run 'su - $username' and then re-run this setup script."
+        exit 0
+    fi
+}
 
 # 0. Update system
 update_system() {
@@ -189,7 +211,7 @@ EOP
 # 1. Install Python
 install_python() {
     print_header "Installing Python and Virtual Environment Tools"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-dev python3-venv build-essential libssl-dev libffi-dev python3-setuptools
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-dev python3-venv libssl-dev libffi-dev python3-setuptools
     print_success "Python environment installed."
 }
 
@@ -416,6 +438,22 @@ install_cuda_toolkit() {
     rm cuda-keyring_1.1-1_all.deb
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get -y install cuda-toolkit
+
+    # The CUDA toolkit installs to /usr/local/cuda, which is not always in the PATH.
+    # We will add it idempotently to the user's shell configuration.
+    print_info "Verifying CUDA path in shell configuration..."
+    local cuda_path_str='export PATH="/usr/local/cuda/bin:$PATH"'
+    if [ -f "$HOME/.zshrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$HOME/.zshrc"; then
+        print_info "Adding CUDA path to ~/.zshrc"
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" >> "$HOME/.zshrc"
+    fi
+    if [ -f "$HOME/.bashrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$HOME/.bashrc"; then
+        print_info "Adding CUDA path to ~/.bashrc"
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" >> "$HOME/.bashrc"
+    fi
+
+    print_success "CUDA Toolkit installed."
+    POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
 
 # 7. Install NVIDIA Container Toolkit
@@ -463,9 +501,6 @@ install_gemini_cli_only() {
     # Using npm with nvm does not require sudo for global packages
     npm install -g npm@latest
 
-    print_info "Installing build essentials for native Node modules..."
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential python3 make g++
-
     print_info "Installing Google Gemini CLI..."
     print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
     # Using npm with nvm does not require sudo for global packages
@@ -477,17 +512,66 @@ install_gemini_cli_only() {
 # 10. Install OpenClaw
 install_openclaw() {
     print_header "Installing OpenClaw"
+
+    print_info "Enabling user lingering to allow services to run after logout..."
+    sudo loginctl enable-linger "$(whoami)"
+
     print_info "Installing OpenClaw..."
     curl -fsSL https://openclaw.ai/install.sh | bash
 
     print_info "Onboarding OpenClaw and installing daemon..."
     # The OpenClaw install script adds ~/.local/bin to the PATH in your shell profile.
     # We add it to the current session's PATH to run the next command.
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     export PATH="$HOME/.local/bin:$PATH"
     openclaw onboard --install-daemon
 
+    local openclaw_config="$HOME/.openclaw/openclaw.json"
+    if [ -f "$openclaw_config" ]; then
+        print_info "Updating OpenClaw gateway configuration..."
+        # Use jq to safely update the JSON config file
+        jq '.gateway.bind = "0.0.0.0" | .gateway.port = 18789 | .gateway.controlUi.enabled = true' "$openclaw_config" > "${openclaw_config}.tmp" && \
+        mv "${openclaw_config}.tmp" "$openclaw_config"
+        print_success "OpenClaw gateway configured to bind to 0.0.0.0:18789."
+    else
+        echo "⚠️  OpenClaw config file not found at ${openclaw_config}. Skipping gateway configuration."
+    fi
+
     print_success "OpenClaw installation complete."
     POST_INSTALL_ACTIONS+=("nvm") # Modifies path, needs same action as nvm
+}
+
+# 11. Install Homebrew
+install_homebrew() {
+    print_header "Installing Homebrew"
+    # Note: build-essential is installed as part of base_dependencies
+
+    # Check for brew command existence in the standard Linux location
+    if [ ! -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
+        print_info "Installing Homebrew non-interactively..."
+        # The official non-interactive method. This will also install dependencies.
+        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    else
+        print_info "Homebrew executable found."
+    fi
+
+    # The installer adds the path to .profile, but we'll ensure it's in zshrc/bashrc for non-login shells.
+    print_info "Verifying Homebrew shell environment in shell configuration..."
+    local brew_shellenv_str='eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
+    if [ -f "$HOME/.zshrc" ] && ! grep -Fq "$brew_shellenv_str" "$HOME/.zshrc"; then
+        print_info "Adding Homebrew shellenv to ~/.zshrc"
+        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" >> "$HOME/.zshrc"
+    fi
+    if [ -f "$HOME/.bashrc" ] && ! grep -Fq "$brew_shellenv_str" "$HOME/.bashrc"; then
+        print_info "Adding Homebrew shellenv to ~/.bashrc"
+        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" >> "$HOME/.bashrc"
+    fi
+
+    print_info "Sourcing Homebrew for the current script session..."
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+
+    print_success "Homebrew installation process finished."
+    POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
 
 # --- Final Summary ---
@@ -559,11 +643,12 @@ show_menu() {
         "Install cuDNN"
         "Install Google Gemini CLI"
         "Install OpenClaw"
+        "Install Homebrew"
     )
 
     clear
     echo -e "\n\e[1;35m--- Ubuntu Prep Script Menu ---\e[0m"
-    echo "Use numbers [1-10] to toggle an option. Press 'a' to select all."
+    echo "Use numbers [1-11] to toggle an option. Press 'a' to select all."
     echo "Press 'i' to install selected, or 'q' to quit."
     echo "---------------------------------"
 
@@ -579,11 +664,12 @@ show_menu() {
 
 main() {
     check_not_root
+    prompt_for_new_user
     check_os
     update_system
     install_base_dependencies
 
-    local selections=(0 0 0 0 0 0 0 0 0 0)
+    local selections=(0 0 0 0 0 0 0 0 0 0 0)
     local funcs=(
         install_zsh
         install_python
@@ -595,13 +681,14 @@ main() {
         install_cudnn
         install_gemini_cli_only
         install_openclaw
+        install_homebrew
     )
 
     while true; do
         show_menu
         read -p "Your choice: " choice
 
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#selections[@]} ]; then
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#funcs[@]} ]; then
             local index=$((choice - 1))
             selections[index]=$((1 - selections[index]))
         elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
