@@ -53,6 +53,14 @@ check_os() {
         exit 1
     fi
 }
+
+# Function to install base dependencies for the script to run properly
+install_base_dependencies() {
+    print_header "Ensuring Base Dependencies are Installed"
+    # These are required by various installation functions
+    sudo apt-get install -y curl git wget unzip lsb-release gnupg ca-certificates
+    print_success "Base dependencies are present."
+}
 # --- Installation Functions ---
 
 # 0. Update system
@@ -66,8 +74,8 @@ update_system() {
 # 0a. Install Oh My Zsh and related tools
 install_zsh() {
     print_header "Installing Zsh, Oh My Zsh, and Plugins"
-    print_info "Installing base packages: zsh, git, curl, wget, tmux, micro"
-    sudo apt-get install -y zsh git curl wget tmux micro
+    print_info "Installing packages: zsh, tmux, micro"
+    sudo apt-get install -y zsh tmux micro
 
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
         print_info "Installing Oh My Zsh..."
@@ -172,8 +180,7 @@ install_docker() {
 
     print_info "Setting up Docker's official GPG key and repository..."
     sudo apt-get update
-    sudo apt-get install -y ca-certificates curl
-    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo install -m 0755 -d /etc/apt/keyrings # ca-certificates and curl are installed as base dependencies
     sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
     sudo chmod a+r /etc/apt/keyrings/docker.asc
 
@@ -358,52 +365,73 @@ install_gemini_cli() {
 # --- Main Menu ---
 
 show_menu() {
+    # This function takes the selection array by reference to display the state
+    local -n selections=$1
+    local options=(
+        "Install Oh My Zsh & Dev Tools (git, tmux, micro)"
+        "Install Python Environment"
+        "Install Docker and Docker Compose"
+        "Install NVM, Node.js & NPM"
+        "Install NVIDIA Stack (VGPU, CUDA, Container Toolkit)"
+        "Install Gemini CLI & OpenClaw"
+    )
+
+    clear
     echo -e "\n\e[1;35m--- Ubuntu Prep Script Menu ---\e[0m"
-    echo "1. Update System"
-    echo "2. Install Oh My Zsh & Dev Tools (git, tmux, micro)"
-    echo "3. Install Python Environment"
-    echo "4. Install Docker and Docker Compose"
-    echo "5. Install NVM, Node.js & NPM"
-    echo "6. Install NVIDIA Stack (VGPU, CUDA, Container Toolkit)"
-    echo "7. Install Gemini CLI & OpenClaw"
-    echo "8. Install ALL"
-    echo "9. Exit"
+    echo "Use numbers [1-6] to toggle an option. Press 'a' to select all."
+    echo "Press 'i' to install selected, or 'q' to quit."
+    echo "---------------------------------"
+
+    for i in "${!options[@]}"; do
+        if [[ ${selections[$i]} -eq 1 ]]; then
+            echo -e " \e[1;32m[x]\e[0m $((i+1)). ${options[$i]}"
+        else
+            echo -e " [ ] $((i+1)). ${options[$i]}"
+        fi
+    done
     echo "---------------------------------"
 }
 
 main() {
     check_not_root
     check_os
+    update_system
+    install_base_dependencies
+
+    local selections=(0 0 0 0 0 0)
+    local funcs=(install_zsh install_python install_docker install_nvm_node install_nvidia_stack install_gemini_cli)
+
     while true; do
-        show_menu
-        read -p "Enter your choice [1-9]: " choice
+        show_menu selections
+        read -rsn1 -p "Your choice: " choice
+
         case $choice in
-            1) update_system ;;
-            2) install_zsh ;;
-            3) install_python ;;
-            4) install_docker ;;
-            5) install_nvm_node ;;
-            6) install_nvidia_stack ;;
-            7) install_gemini_cli ;;
-            8)
-                update_system
-                install_zsh
-                install_python
-                install_docker
-                install_nvm_node
-                install_nvidia_stack
-                install_gemini_cli
-                print_success "All installations complete!"
+            [1-6])
+                local index=$((choice - 1))
+                selections[$index]=$((1 - selections[$index]))
                 ;;
-            9)
-                echo "Exiting."
-                break
+            a|A)
+                for i in "${!selections[@]}"; do selections[$i]=1; done
                 ;;
-            *)
-                echo "Invalid option. Please try again."
-                ;;
-        esac
+            i|I) break ;;
+            q|Q) echo -e "\nExiting."; exit 0 ;;
+        fi
     done
+
+    echo -e "\n--- Starting Installation ---"
+    local something_installed=0
+    for i in "${!selections[@]}"; do
+        if [[ ${selections[$i]} -eq 1 ]]; then
+            something_installed=1
+            ${funcs[$i]}
+        fi
+    done
+
+    if [[ $something_installed -eq 1 ]]; then
+        print_success "Selected installations are complete."
+    else
+        print_info "No options were selected for installation."
+    fi
 }
 
 # --- Script Entry Point ---
