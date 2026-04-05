@@ -283,39 +283,23 @@ install_nvidia_vgpu() {
         return 0 # Exit the function gracefully
     fi
 
-    # --- Start NGC Configuration ---
-    local ngc_api_key=""
-
-    # 1. Try to get key from secrets file
+    # --- Start NGC Configuration ---    
+    print_info "Launching interactive NGC configuration..."
+    
     if [ -f "$HOME/.zshenv_secrets" ]; then
-        print_info "Searching for NVIDIA_NGC_API_KEY in ~/.zshenv_secrets..."
-        # Use a robust sed command to find an uncommented key and extract the value from between the quotes.
-        ngc_api_key=$(sed -n 's/^[[:space:]]*export[[:space:]]\+NVIDIA_NGC_API_KEY[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME/.zshenv_secrets" || true)
+        # Check if a key has been set in the secrets file to provide a helpful message.
+        local key_exists
+        key_exists=$(grep -E '^export NVIDIA_NGC_API_KEY=' "$HOME/.zshenv_secrets" || true)
+        if [[ -n "$key_exists" ]]; then
+            echo -e "\e[1;33mAn API key was found in ~/.zshenv_secrets. Please copy it from there and paste it when prompted.\e[0m"
+        else
+            echo -e "\e[1;33mNo API key was found in your secrets file. Please have your key ready to paste.\e[0m"
+        fi
     fi
-
-    # 2. If not found, prompt user
-    if [[ -z "$ngc_api_key" ]]; then
-        print_info "Key not found in secrets file. Please enter it manually."
-        print_info "This is the long string that usually starts with 'nvapi-'."
-        read -p "NVIDIA NGC API Key: " ngc_api_key
-    else
-        print_info "Found existing API key in secrets file."
-    fi
-
-    # 3. If we have a key (either auto or manual), configure NGC. Otherwise, exit.
-    if [[ -z "$ngc_api_key" ]]; then
-        print_info "No API key provided. Skipping NGC configuration and vGPU driver install."
-        return 0
-    fi
-
-    # We have a key, so configure NGC non-interactively.
-    print_info "Configuring NGC CLI non-interactively..."
-    # Pipe the API key to the command. The user will then be prompted for org/team.
-    # This is more robust than trying to guess the correct org/team.
-    print_info "Your API key will be entered automatically."
-    echo -e "\e[1;33mPlease select your organization and team from the list when prompted.\e[0m"
-
-    if echo "$ngc_api_key" | ngc config set; then
+    
+    # Run the interactive setup and let the user handle it.
+    # This is the most reliable method given the tool's complex interactivity.
+    if ngc config set; then
         print_success "NGC CLI configured successfully."
     else
         echo "❌ Failed to configure NGC CLI. Please try manually with 'ngc config set'."
