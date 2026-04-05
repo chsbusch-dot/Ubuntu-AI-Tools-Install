@@ -309,8 +309,12 @@ install_nvidia_vgpu() {
     fi
 
     # We have a key, so configure NGC non-interactively.
-    ngc config set apikey "$ngc_api_key"
-    print_success "NGC CLI configured successfully."
+    print_info "Configuring NGC CLI non-interactively..."
+    if echo "$ngc_api_key" | ngc config set; then
+        print_success "NGC CLI configured successfully."
+    else
+        echo "❌ Failed to configure NGC CLI. Please try manually with 'ngc config set'."
+    fi
 
     # --- Start vGPU Driver Install ---
     read -p "Attempt automatic install of latest vGPU guest driver? (For VMware ESXi) [y/N]: " confirm_vgpu
