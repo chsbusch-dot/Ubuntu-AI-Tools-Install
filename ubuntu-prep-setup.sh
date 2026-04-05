@@ -245,18 +245,13 @@ install_nvidia_vgpu() {
     print_header "Installing NVIDIA vGPU Driver"
     print_info "Checking NVIDIA NGC CLI installation..."
 
-    # A correct installation is a symlink at /usr/local/bin/ngc pointing to /opt/ngc-cli/ngc
-    local is_installed_correctly=false
-    if [[ -L "/usr/local/bin/ngc" && "$(readlink /usr/local/bin/ngc)" == "/opt/ngc-cli/ngc" ]]; then
-        is_installed_correctly=true
-    fi
-
-    if [[ "$is_installed_correctly" == true ]]; then
-        print_info "NGC CLI is already installed correctly."
+    # A correct installation is the presence of the executable in /opt/ngc-cli
+    if [[ -f "/opt/ngc-cli/ngc" ]]; then
+        print_info "NGC CLI is already installed in /opt/ngc-cli."
     else
-        print_info "NGC CLI not found or installed incorrectly. Performing fresh installation..."
+        print_info "NGC CLI not found. Performing fresh installation..."
 
-        # Clean up potentially broken artifacts from previous attempts
+        # Clean up potentially broken symlink from previous attempts
         sudo rm -f /usr/local/bin/ngc
 
         local tmp_dir
@@ -267,13 +262,20 @@ install_nvidia_vgpu() {
         unzip -o -q "${tmp_dir}/ngccli_linux.zip" -d "${tmp_dir}"
 
         print_info "Moving NGC CLI to /opt/ngc-cli..."
-        sudo rm -rf /opt/ngc-cli # Remove old directory if it exists
+        # Clean up any previous installation attempt
+        if [ -d "/opt/ngc-cli" ]; then
+            sudo rm -rf /opt/ngc-cli
+        fi
         sudo mv "${tmp_dir}/ngc-cli" /opt/
-        print_info "Creating symbolic link in /usr/local/bin..."
-        sudo ln -sf /opt/ngc-cli/ngc /usr/local/bin/ngc
+        print_info "Adding NGC CLI to system-wide PATH via /etc/profile.d/ngc.sh..."
+        echo 'export PATH="/opt/ngc-cli:$PATH"' | sudo tee /etc/profile.d/ngc.sh > /dev/null
         rm -rf "${tmp_dir}"
         print_success "NVIDIA NGC CLI installed."
     fi
+
+    # Add the path for the current script session so we can run 'ngc' immediately
+    export PATH="/opt/ngc-cli:$PATH"
+    POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 
     read -p "Do you want to configure NGC CLI now? (requires API key) [y/N]: " confirm_ngc
     if [[ "$confirm_ngc" == "y" || "$confirm_ngc" == "Y" ]]; then
