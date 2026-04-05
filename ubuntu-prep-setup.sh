@@ -134,7 +134,7 @@ EOF
 
     print_info "Adding custom Zsh prompt..."
     # Add custom prompt to override the robbyrussell theme default
-    echo -e '\n# Custom prompt to show full path\nPROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}%(?:%{$fg_bold[green]%}➜ :%{$fg_bold[red]%}➜ ) %{$fg[cyan]%}%/%{$reset_color%} "' >> ~/.zshrc
+    echo -e '\n# Custom prompt to show full path\nPROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}> %{$fg[cyan]%}%/%{$reset_color%} "' >> ~/.zshrc
 
     # Interactive prompt for API keys
     read -p "Do you want to add API keys now? [y/N]: " add_keys_now
@@ -425,7 +425,7 @@ print_final_summary() {
         echo -e "  1. \e[1;32mOpen a NEW terminal window.\e[0m"
         if [[ -n "$rc_file" ]]; then
             echo -e "  2. OR, run the following command in your CURRENT terminal:"
-            echo -e "     \e[1;32msource ${rc_file}\e[0m"
+            echo "source ${rc_file}"
         fi
         echo "" # Newline for spacing
     fi
