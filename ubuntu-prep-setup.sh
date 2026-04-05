@@ -141,8 +141,8 @@ EOF
     # Add custom prompt to override the theme default. Using a heredoc for clarity.
     cat <<'EOP' >> ~/.zshrc
 
-# Custom prompt augmenting the robbyrussell theme
-PROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}%(?:%{$fg_bold[green]%}➜ :%{$fg_bold[red]%}➜ ) %{$fg[cyan]%}%/%{$reset_color%} > "
+# Custom prompt showing user@host > path >
+PROMPT="%{$fg_bold[yellow]%}%n@%m%{$reset_color%} > %{$fg[cyan]%}%/%{$reset_color%} > "
 EOP
 
     # Interactive prompt for API keys
