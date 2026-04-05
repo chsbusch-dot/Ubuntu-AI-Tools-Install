@@ -310,7 +310,8 @@ install_nvidia_vgpu() {
 
     # We have a key, so configure NGC non-interactively.
     print_info "Configuring NGC CLI non-interactively..."
-    if echo "$ngc_api_key" | ngc config set; then
+    # Pipe the API key, then send three newlines to accept defaults for org, team, and format.
+    if (echo "$ngc_api_key"; echo; echo; echo) | ngc config set; then
         print_success "NGC CLI configured successfully."
     else
         echo "❌ Failed to configure NGC CLI. Please try manually with 'ngc config set'."
