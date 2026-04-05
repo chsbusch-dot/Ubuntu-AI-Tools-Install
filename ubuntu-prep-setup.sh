@@ -132,6 +132,10 @@ EOF
         echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.zsh_secrets ]]; then\n  source ~/.zsh_secrets\nfi' >> ~/.zshrc
     fi
 
+    print_info "Adding custom Zsh prompt..."
+    # Add custom prompt to override the robbyrussell theme default
+    echo -e '\n# Custom prompt to override robbyrussell theme\nPROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}%(?:%{$fg_bold[green]%}➜ :%{$fg_bold[red]%}➜ ) %{$fg[cyan]%}%c%{$reset_color%}"' >> ~/.zshrc
+
     # Interactive prompt for API keys
     read -p "Do you want to add API keys now? [y/N]: " add_keys_now
     if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
@@ -409,10 +413,19 @@ print_final_summary() {
         echo -e "(Or, log out and log back in)."
         echo ""
     elif [[ $path_changed -eq 1 ]]; then
+        # Determine the correct rc file based on the user's default shell
+        local rc_file=""
+        if [[ "$SHELL" == */zsh ]]; then
+            rc_file="$HOME/.zshrc"
+        elif [[ "$SHELL" == */bash ]]; then
+            rc_file="$HOME/.bashrc"
+        fi
         echo -e "\e[1;33mTo activate newly installed commands (like nvm, node, gemini), you must either:\e[0m"
         echo -e "  1. \e[1;32mOpen a NEW terminal window.\e[0m"
-        echo -e "  2. OR, run the following command in your CURRENT terminal (assuming you use bash):"
-        echo -e "     \e[1;32msource ~/.bashrc\e[0m"
+        if [[ -n "$rc_file" ]]; then
+            echo -e "  2. OR, run the following command in your CURRENT terminal:"
+            echo -e "     \e[1;32msource ${rc_file}\e[0m"
+        fi
         echo "" # Newline for spacing
     fi
 
