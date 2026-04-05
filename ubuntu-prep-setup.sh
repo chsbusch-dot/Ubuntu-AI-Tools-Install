@@ -290,11 +290,11 @@ install_nvidia_vgpu() {
     # This makes the script idempotent and self-healing.
     print_info "Verifying NGC CLI path in shell configuration..."
     local ngc_path_str='export PATH="/opt/ngc-cli:$PATH"'
-    if [ -f "$HOME/.zshrc" ] && ! grep -q "/opt/ngc-cli" "$HOME/.zshrc"; then
+    if [ -f "$HOME/.zshrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/opt/ngc-cli"' "$HOME/.zshrc"; then
         print_info "Adding NGC CLI path to ~/.zshrc"
         echo -e "\n# Add NVIDIA NGC CLI to path\n${ngc_path_str}" >> "$HOME/.zshrc"
     fi
-    if [ -f "$HOME/.bashrc" ] && ! grep -q "/opt/ngc-cli" "$HOME/.bashrc"; then
+    if [ -f "$HOME/.bashrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/opt/ngc-cli"' "$HOME/.bashrc"; then
         print_info "Adding NGC CLI path to ~/.bashrc"
         echo -e "\n# Add NVIDIA NGC CLI to path\n${ngc_path_str}" >> "$HOME/.bashrc"
     fi
