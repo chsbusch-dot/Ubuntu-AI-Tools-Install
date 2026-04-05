@@ -135,8 +135,12 @@ EOF
     fi
 
     print_info "Adding custom Zsh prompt..."
-    # Add custom prompt to override the robbyrussell theme default
-    echo -e '\n# Custom prompt to show full path\nPROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}> %{$fg[cyan]%}%/%{$reset_color%} "' >> ~/.zshrc
+    # Add custom prompt to override the theme default. Using a heredoc for clarity.
+    cat <<'EOP' >> ~/.zshrc
+
+# Custom prompt to show full path
+PROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}> %{$fg[cyan]%}%/%{$reset_color%} "
+EOP
 
     # Interactive prompt for API keys
     read -p "Do you want to add API keys now? [y/N]: " add_keys_now
@@ -411,10 +415,11 @@ print_final_summary() {
 
     if [[ $shell_changed -eq 1 ]]; then
         echo -e "\e[1;33mYour default shell has been changed to Zsh.\e[0m"
-        echo -e "To start using Zsh and activate all newly installed commands (like nvm, node, gemini), you must:"
-        echo -e "  \e[1;32mOpen a NEW terminal window.\e[0m"
-        echo -e "(Or, log out and log back in)."
-        echo ""
+        echo -e "To start using Zsh and activate all newly installed commands (like nvm, node, gemini), you must either:"
+        echo -e "  1. \e[1;32mOpen a NEW terminal window.\e[0m (Recommended)"
+        echo -e "  2. OR, paste the following command into your current terminal:"
+        echo "source $HOME/.zshrc"
+        echo "" # Newline for spacing
     elif [[ $path_changed -eq 1 ]]; then
         # Determine the correct rc file based on the user's default shell
         local rc_file=""
