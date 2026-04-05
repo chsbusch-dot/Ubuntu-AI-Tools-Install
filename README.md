@@ -16,7 +16,7 @@ This script automates the setup and preparation of a fresh Ubuntu LTS system. It
     - Automatically detects and installs the latest NVIDIA vGPU guest drivers for VMware ESXi.
     - Installs the CUDA Toolkit, NVIDIA Container Toolkit, and cuDNN.
 - **AI/ML Tools**: Installs the Google Gemini CLI and OpenClaw.
-- **Secure Configuration**: Helps create and manage API keys in a separate `.zsh_secrets` file.
+- **Secure Configuration**: Helps create and manage API keys in a separate `.zshenv_secrets` file.
 - **Pre-flight Checks**: Verifies the script is running on Ubuntu and not as the root user.
 
 ## Prerequisites

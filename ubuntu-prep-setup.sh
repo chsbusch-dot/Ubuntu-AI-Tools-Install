@@ -124,7 +124,7 @@ install_zsh() {
 # export GITHUB_TOKEN="your_github_token"
 # export AWS_SECRET_ACCESS_KEY="your_aws_secret"
 # export OPENAI_API_KEY="your_openai_key"
-# export GEMINI_PRO_API_KEY="your_gemini_key"
+# export GOOGLE_API_KEY="your_google_api_key"
 # export CLAUDE_API_KEY="your_claude_key"
 # export NVIDIA_NGC_API_KEY="your_ngc_key"
 EOF
@@ -134,12 +134,15 @@ EOF
         echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.zshenv_secrets ]]; then\n  source ~/.zshenv_secrets\nfi' >> ~/.zshrc
     fi
 
+    print_info "Enabling true color support for modern terminals..."
+    echo -e '\n# Set COLORTERM to advertise true color support to modern CLI tools\nexport COLORTERM=truecolor' >> ~/.zshrc
+
     print_info "Adding custom Zsh prompt..."
     # Add custom prompt to override the theme default. Using a heredoc for clarity.
     cat <<'EOP' >> ~/.zshrc
 
-# Custom prompt to show full path
-PROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}> %{$fg[cyan]%}%/%{$reset_color%} "
+# Custom prompt augmenting the robbyrussell theme
+PROMPT="%{$fg_bold[yellow]%}%n@%m %{$reset_color%}%(?:%{$fg_bold[green]%}➜ :%{$fg_bold[red]%}➜ ) %{$fg[cyan]%}%/%{$reset_color%} > "
 EOP
 
     # Interactive prompt for API keys
@@ -153,7 +156,7 @@ EOP
                     print_info "Please enter the value for each key. Press Enter to skip a key."
                     keys_to_prompt=(
                         "GITHUB_TOKEN" "AWS_SECRET_ACCESS_KEY" "OPENAI_API_KEY"
-                        "GEMINI_PRO_API_KEY" "CLAUDE_API_KEY" "NVIDIA_NGC_API_KEY"
+                        "GOOGLE_API_KEY" "CLAUDE_API_KEY" "NVIDIA_NGC_API_KEY"
                     )
                     for key_name in "${keys_to_prompt[@]}"; do
                         read -p "Enter value for ${key_name}: " key_value
