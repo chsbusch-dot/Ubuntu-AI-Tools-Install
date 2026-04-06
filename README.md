@@ -16,7 +16,7 @@ This script automates the setup and preparation of a fresh Ubuntu LTS system. It
     - Automatically detects and installs the latest NVIDIA vGPU guest drivers for VMware ESXi.
     - Installs the CUDA Toolkit, NVIDIA Container Toolkit, and cuDNN.
 - **AI/ML Tools**: Installs the Google Gemini CLI and OpenClaw.
-- **Secure Configuration**: Helps create and manage API keys in a separate `.zshenv_secrets` file.
+- **Secure Configuration**: Helps create and manage API keys in a separate `.env.secrets` file.
 - **Pre-flight Checks**: Verifies the script is running on Ubuntu and not as the root user.
 
 ## Prerequisites
@@ -54,7 +54,7 @@ chmod +x ubuntu-prep-setup.sh
 
 ### API Keys
 
-The script will create a `~/.zshenv_secrets` file to store your API keys securely. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.zshrc` but is ignored by Git to prevent accidental exposure.
+The script will create a `~/.env.secrets` file to store your API keys securely. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.bashrc` and `.zshrc` but is ignored by Git to prevent accidental exposure.
 
 ## License
 

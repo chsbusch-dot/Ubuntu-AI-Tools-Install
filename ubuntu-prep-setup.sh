@@ -100,6 +100,73 @@ determine_target_user() {
     print_info "All user-specific files will be installed for user '$TARGET_USER' in '$TARGET_USER_HOME'."
 }
 
+# Function to configure API keys for either bash or zsh
+setup_env_secrets() {
+    print_header "Configuring API Keys"
+    if [ ! -f "$TARGET_USER_HOME/.env.secrets" ]; then
+        print_info "Creating ~/.env.secrets template for API keys..."
+        sudo -u "$TARGET_USER" bash -c "cat <<'EOF' > $TARGET_USER_HOME/.env.secrets
+# This file is for storing secrets and API keys.
+# It is sourced by your shell configuration if it exists.
+# Make sure this file is NOT committed to version control.
+
+# --- API Key Placeholders ---
+# Uncomment and fill in the values for the services you use.
+
+# export GITHUB_TOKEN=\"your_github_token\"
+# export AWS_SECRET_ACCESS_KEY=\"your_aws_secret\"
+# export OPENAI_API_KEY=\"your_openai_key\"
+# export GOOGLE_API_KEY=\"your_google_api_key\"
+# export CLAUDE_API_KEY=\"your_claude_key\"
+# export NVIDIA_API_KEY=\"your_nvidia_api_key\"
+EOF"
+    fi
+
+    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q ".env.secrets" "$TARGET_USER_HOME/.bashrc"; then
+        echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.env.secrets ]]; then\n  source ~/.env.secrets\nfi' | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
+    fi
+
+    # Interactive prompt for API keys
+    if [[ "$IS_DIFFERENT_USER" == false ]]; then
+        read -p "Do you want to add API keys now? [y/N]: " add_keys_now
+        if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
+            PS3="Please choose how to add your keys: "
+            options=("Enter keys one-by-one" "Edit file manually with nano" "Skip")
+            select opt in "${options[@]}"; do
+                case $opt in
+                    "Enter keys one-by-one")
+                        print_info "Please enter the value for each key. Press Enter to skip a key."
+                        keys_to_prompt=(
+                            "GITHUB_TOKEN" "AWS_SECRET_ACCESS_KEY" "OPENAI_API_KEY"
+                            "GOOGLE_API_KEY" "CLAUDE_API_KEY" "NVIDIA_API_KEY"
+                        )
+                        for key_name in "${keys_to_prompt[@]}"; do
+                            read -p "Enter value for ${key_name}: " key_value
+                            if [[ -n "$key_value" ]]; then
+                                sed -i "s|# export ${key_name}=.*|export ${key_name}=\"${key_value}\"|" "$TARGET_USER_HOME/.env.secrets"
+                            fi
+                        done
+                        print_success "API keys have been saved to ~/.env.secrets."
+                        break
+                        ;;
+                    "Edit file manually with nano")
+                        print_info "Opening ~/.env.secrets with nano. Save with Ctrl+X, then Y, then Enter."
+                        nano "$TARGET_USER_HOME/.env.secrets"
+                        print_success "Finished editing secrets file."
+                        break
+                        ;;
+                    "Skip")
+                        break
+                        ;;
+                    *) echo "Invalid option $REPLY";;
+                esac
+            done
+        fi
+    else
+        print_info "Skipping interactive API key entry. Please configure for '$TARGET_USER' manually."
+    fi
+}
+
 # 0a. Install Oh My Zsh and related tools
 install_zsh() {
     print_header "Installing Zsh, Oh My Zsh, and Plugins"
@@ -138,26 +205,9 @@ install_zsh() {
     # Replace the default plugins line with the new one
     sudo sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search)/' "$TARGET_USER_HOME/.zshrc"
 
-    print_info "Creating ~/.zshenv_secrets template for API keys..."
-    sudo -u "$TARGET_USER" bash -c "cat <<'EOF' > ~/.zshenv_secrets
-# This file is for storing secrets and API keys.
-# It is sourced by ~/.zshrc if it exists.
-# Make sure this file is NOT committed to version control.
-
-# --- API Key Placeholders ---
-# Uncomment and fill in the values for the services you use.
-
-# export GITHUB_TOKEN="your_github_token"
-# export AWS_SECRET_ACCESS_KEY="your_aws_secret"
-# export OPENAI_API_KEY="your_openai_key"
-# export GOOGLE_API_KEY="your_google_api_key"
-# export CLAUDE_API_KEY="your_claude_key"
-# export NVIDIA_API_KEY="your_nvidia_api_key"
-EOF
-
-    # Add sourcing of .zshenv_secrets to .zshrc
-    if ! sudo grep -q ".zshenv_secrets" "$TARGET_USER_HOME/.zshrc"; then
-        echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.zshenv_secrets ]]; then\n  source ~/.zshenv_secrets\nfi' | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
+    # Add sourcing of .env.secrets to .zshrc
+    if ! sudo grep -q ".env.secrets" "$TARGET_USER_HOME/.zshrc"; then
+        echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.env.secrets ]]; then\n  source ~/.env.secrets\nfi' | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
 
     print_info "Enabling true color support for modern terminals..."
@@ -170,46 +220,6 @@ EOF
 # Custom prompt showing user@host > path >
 PROMPT="%{$fg_bold[yellow]%}%n@%m%{$reset_color%} > %{$fg[cyan]%}%/%{$reset_color%} > "
 EOP
-
-    # Interactive prompt for API keys
-    if [[ "$IS_DIFFERENT_USER" == false ]]; then
-        read -p "Do you want to add API keys now? [y/N]: " add_keys_now
-        if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
-        PS3="Please choose how to add your keys: "
-        options=("Enter keys one-by-one" "Edit file manually with nano" "Skip")
-        select opt in "${options[@]}"; do
-            case $opt in
-                "Enter keys one-by-one")
-                    print_info "Please enter the value for each key. Press Enter to skip a key."
-                    keys_to_prompt=(
-                        "GITHUB_TOKEN" "AWS_SECRET_ACCESS_KEY" "OPENAI_API_KEY"
-                        "GOOGLE_API_KEY" "CLAUDE_API_KEY" "NVIDIA_API_KEY"
-                    )
-                    for key_name in "${keys_to_prompt[@]}"; do
-                        read -p "Enter value for ${key_name}: " key_value
-                        if [[ -n "$key_value" ]]; then
-                            sed -i "s|# export ${key_name}=.*|export ${key_name}=\"${key_value}\"|" ~/.zshenv_secrets
-                        fi
-                    done
-                    print_success "API keys have been saved to ~/.zshenv_secrets."
-                    break
-                    ;;
-                "Edit file manually with nano")
-                    print_info "Opening ~/.zshenv_secrets with nano. Save with Ctrl+X, then Y, then Enter."
-                    nano ~/.zshenv_secrets
-                    print_success "Finished editing secrets file."
-                    break
-                    ;;
-                "Skip")
-                    break
-                    ;;
-                *) echo "Invalid option $REPLY";;
-            esac
-        done
-        fi
-    else
-        print_info "Skipping interactive API key entry. Please configure for '$TARGET_USER' manually."
-    fi
 
     print_success "Zsh and plugins installed."
     POST_INSTALL_ACTIONS+=("zsh")
@@ -468,6 +478,10 @@ install_homebrew() {
     # Homebrew installs under /home/linuxbrew/.linuxbrew, which is shared, but we check as the target user.
     if ! sudo -u "$TARGET_USER" -i bash -c 'command -v brew' &> /dev/null; then
         print_info "Installing Homebrew non-interactively..."
+        # Pre-create the entire directory structure with correct ownership.
+        # This entirely bypasses the Homebrew installer's internal sudo checks for standard users.
+        sudo mkdir -p /home/linuxbrew/.linuxbrew/{bin,etc,include,lib,sbin,share,var,opt,share/zsh,share/zsh/site-functions,var/homebrew,var/homebrew/linked,Cellar,Caskroom,Frameworks}
+        sudo chown -R "$TARGET_USER":"$TARGET_USER" /home/linuxbrew
         # The official non-interactive method. This will also install dependencies.
         sudo -u "$TARGET_USER" -i bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     else
@@ -704,6 +718,9 @@ main() {
         fi
     done
 
+    # Configure API keys after menu selection, before installation tasks begin
+    setup_env_secrets
+
     echo -e "\n--- Starting Installation ---"
     local something_installed=0
     for i in "${!selections[@]}"; do
@@ -716,6 +733,16 @@ main() {
     if [[ $something_installed -eq 1 ]]; then
         print_success "Selected installations are complete."
         print_final_summary
+        
+        echo -e "\n\e[1;32m================================================================\e[0m"
+        echo -e "\e[1;32mINSTALLATION COMPLETE!\e[0m"
+        echo -e "\e[1;33mPlease run the following command to activate your new environment:\e[0m"
+        if [ -f "$TARGET_USER_HOME/.zshrc" ] && [[ "$SHELL" == *"zsh"* || "${selections[1]}" == "1" ]]; then
+            echo -e "\e[1;36msource ~/.zshrc\e[0m"
+        else
+            echo -e "\e[1;36msource ~/.bashrc\e[0m"
+        fi
+        echo -e "\e[1;32m================================================================\e[0m\n"
     else
         print_info "No options were selected for installation."
     fi
