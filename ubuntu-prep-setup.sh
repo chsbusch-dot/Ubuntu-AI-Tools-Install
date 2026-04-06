@@ -96,14 +96,6 @@ determine_target_user() {
     print_info "All user-specific files will be installed for user '$TARGET_USER' in '$TARGET_USER_HOME'."
 }
 
-# 0. Update system
-update_system() {
-    print_header "Updating System Packages"
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-    print_success "System updated and upgraded."
-}
-
 # 0a. Install Oh My Zsh and related tools
 install_zsh() {
     print_header "Installing Zsh, Oh My Zsh, and Plugins"
@@ -219,6 +211,14 @@ EOP
     POST_INSTALL_ACTIONS+=("zsh")
 }
 
+# 0. Update system
+update_system() {
+    print_header "Updating System Packages"
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    print_success "System updated and upgraded."
+}
+
 # 1. Install Python
 install_python() {
     print_header "Installing Python and Virtual Environment Tools"
@@ -259,16 +259,29 @@ install_docker() {
 install_nvm_node() {
     print_header "Installing NVM, Node.js (LTS), and NPM"
     print_info "Running the NVM installation script silently..."
-    # This runs the installer as the target user, which updates their .bashrc/.zshrc. Silence its output.
-    sudo -u "$TARGET_USER" bash -c 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash > /dev/null 2>&1'
+    # This runs the installer as the target user, which updates their .bashrc/.zshrc.
+    # Use -s for curl to silence progress bar, and redirect bash output to /dev/null.
+    sudo -u "$TARGET_USER" bash -c 'curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash > /dev/null 2>&1'
 
     print_info "Installing the latest LTS version of Node.js..."
-    # Explicitly source NVM within the subshell for immediate use
-    local NVM_LOAD_COMMAND='export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
-    sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && nvm install --lts"
+    # Run the install as the target user in a login shell.
+    # Explicitly set NVM_DIR and source nvm.sh within the subshell for immediate use.
+    sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm install --lts
+    '
 
-    local node_version=$(sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && node -v")
-    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && npm -v")
+    local node_version=$(sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        node -v
+    ')
+    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm -v
+    ')
 
     print_success "NVM, Node.js, and NPM installed."
     print_info "Node version: $node_version, NPM version: $npm_version"
@@ -379,19 +392,30 @@ install_cudnn() {
 install_gemini_cli_only() {
     print_header "Installing Google Gemini CLI"
 
-    # Check if nvm is installed for the target user
-    local NVM_LOAD_COMMAND='export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
-    if ! sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && command -v nvm" &> /dev/null; then
+    # Check if nvm is installed for the target user by attempting to source it and check for 'nvm' command.
+    if ! sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        command -v nvm
+    ' &> /dev/null; then
         echo "❌ NVM is not installed for user '$TARGET_USER'. Please run the 'Install NVM' option first."
         return 1
     fi
 
     print_info "Updating npm to the latest version (globally for the current Node version)..."
-    sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && npm install -g npm@latest"
+    sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm install -g npm@latest
+    '
 
     print_info "Installing Google Gemini CLI..."
     print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
-    sudo -u "$TARGET_USER" -i bash -c "$NVM_LOAD_COMMAND && npm install -g @google/gemini-cli@latest"
+    sudo -u "$TARGET_USER" -i bash -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm install -g @google/gemini-cli@latest
+    '
     
     print_success "Google Gemini CLI installed."
     POST_INSTALL_ACTIONS+=("nvm") # Depends on nvm path
@@ -468,6 +492,79 @@ install_homebrew() {
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
 
+# --- Installation Checks ---
+check_installations() {
+    print_header "Checking for Existing Installations"
+
+    # Note: selections[0] is for 'update_system' and is not pre-checked.
+
+    # 1. Zsh (index 1)
+    if [ -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
+        print_info "Found existing Oh My Zsh installation."
+        selections[1]=1
+    fi
+
+    # 2. Python (index 2)
+    if command -v python3 &> /dev/null && command -v pip3 &> /dev/null; then
+        print_info "Found existing Python installation."
+        selections[2]=1
+    fi
+
+    # 3. Docker (index 3)
+    if command -v docker &> /dev/null && groups "$TARGET_USER" | grep -q '\bdocker\b'; then
+        print_info "Found existing Docker installation and user configuration."
+        selections[3]=1
+    fi
+
+    # 4. NVM/Node (index 4)
+    if [ -d "$TARGET_USER_HOME/.nvm" ] && sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v node &> /dev/null'; then
+        print_info "Found existing NVM and Node.js installation."
+        selections[4]=1
+    fi
+
+    # 5. vGPU Driver (index 5)
+    if command -v nvidia-smi &> /dev/null; then
+        print_info "Found existing NVIDIA driver (nvidia-smi)."
+        selections[5]=1
+    fi
+
+    # 6. CUDA Toolkit (index 6)
+    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+        print_info "Found existing CUDA Toolkit."
+        selections[6]=1
+    fi
+
+    # 7. NVIDIA Container Toolkit (index 7)
+    if dpkg -l | grep -q 'nvidia-container-toolkit'; then
+        print_info "Found existing NVIDIA Container Toolkit."
+        selections[7]=1
+    fi
+
+    # 8. cuDNN (index 8)
+    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
+        print_info "Found existing cuDNN installation."
+        selections[8]=1
+    fi
+
+    # 9. Gemini CLI (index 9)
+    if sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v gemini &> /dev/null'; then
+        print_info "Found existing Gemini CLI installation."
+        selections[9]=1
+    fi
+
+    # 10. OpenClaw (index 10)
+    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
+        print_info "Found existing OpenClaw installation."
+        selections[10]=1
+    fi
+
+    # 11. Homebrew (index 11)
+    if [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
+        print_info "Found existing Homebrew installation."
+        selections[11]=1
+    fi
+}
+
 # --- Final Summary ---
 
 print_final_summary() {
@@ -527,6 +624,7 @@ print_final_summary() {
 show_menu() {
     # This function takes the selection array by reference to display the state
     local options=(
+        "Update System Packages (apt update && upgrade)"
         "Install Oh My Zsh & Dev Tools (git, tmux, micro)"
         "Install Python Environment"
         "Install Docker and Docker Compose"
@@ -542,7 +640,7 @@ show_menu() {
 
     clear
     echo -e "\n\e[1;35m--- Ubuntu Prep Script Menu ---\e[0m"
-    echo "Use numbers [1-11] to toggle an option. Press 'a' to select all."
+    echo "Use numbers [1-12] to toggle an option. Press 'a' to select all."
     echo "Press 'i' to install selected, or 'q' to quit."
     echo "---------------------------------"
 
@@ -560,11 +658,11 @@ main() {
     check_not_root
     check_os
     determine_target_user
-    update_system
     install_base_dependencies
 
-    local selections=(0 0 0 0 0 0 0 0 0 0 0)
+    local selections=(0 0 0 0 0 0 0 0 0 0 0 0)
     local funcs=(
+        update_system
         install_zsh
         install_python
         install_docker
@@ -577,6 +675,8 @@ main() {
         install_openclaw
         install_homebrew
     )
+
+    check_installations
 
     while true; do
         show_menu
