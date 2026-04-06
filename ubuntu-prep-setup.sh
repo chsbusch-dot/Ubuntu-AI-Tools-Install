@@ -282,12 +282,16 @@ install_vgpu_driver_from_link() {
         return 0 # Exit the function gracefully
     fi
 
-    # !!! IMPORTANT !!!
-    # Replace this placeholder with the direct download link to your vGPU driver .deb or .zip file.
-    local vgpu_driver_url="https://endstationiv.synology.me:5001/sharing/9YVgBZWao"
+    print_info "Please provide the direct download URL for the vGPU driver."
+    echo -e "\e[1;33mThis must be a direct link that works with curl, not a sharing page.\e[0m"
+    echo "Example of a valid link inside a curl command:"
+    echo 'curl -L "https://drive.usercontent.google.com/download?id=1qrZOFktPq2Z7tnM7YGPIdTPNUT1stZZW&confirm=t" -o filename'
 
-    if [[ "$vgpu_driver_url" == "https://endstationiv.synology.me:5001/sharing/9YVgBZWao" ]]; then
-        echo "❌ The vGPU driver URL in the script is a placeholder. Please edit the 'install_vgpu_driver_from_link' function and replace it with your direct download link."
+    local vgpu_driver_url=""
+    read -p "Enter the direct download URL: " vgpu_driver_url
+
+    if [[ -z "$vgpu_driver_url" ]]; then
+        echo "❌ No URL provided. Skipping vGPU driver installation."
         return 1
     fi
 
