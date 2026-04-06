@@ -501,67 +501,67 @@ check_installations() {
     # 1. Zsh (index 1)
     if [ -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
         print_info "Found existing Oh My Zsh installation."
-        selections[1]=1
+        installed_state[1]=1
     fi
 
     # 2. Python (index 2)
     if command -v python3 &> /dev/null && command -v pip3 &> /dev/null; then
         print_info "Found existing Python installation."
-        selections[2]=1
+        installed_state[2]=1
     fi
 
     # 3. Docker (index 3)
     if command -v docker &> /dev/null && groups "$TARGET_USER" | grep -q '\bdocker\b'; then
         print_info "Found existing Docker installation and user configuration."
-        selections[3]=1
+        installed_state[3]=1
     fi
 
     # 4. NVM/Node (index 4)
     if [ -d "$TARGET_USER_HOME/.nvm" ] && sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v node &> /dev/null'; then
         print_info "Found existing NVM and Node.js installation."
-        selections[4]=1
+        installed_state[4]=1
     fi
 
     # 5. vGPU Driver (index 5)
     if command -v nvidia-smi &> /dev/null; then
         print_info "Found existing NVIDIA driver (nvidia-smi)."
-        selections[5]=1
+        installed_state[5]=1
     fi
 
     # 6. CUDA Toolkit (index 6)
     if [ -f "/usr/local/cuda/bin/nvcc" ]; then
         print_info "Found existing CUDA Toolkit."
-        selections[6]=1
+        installed_state[6]=1
     fi
 
     # 7. NVIDIA Container Toolkit (index 7)
     if dpkg -l | grep -q 'nvidia-container-toolkit'; then
         print_info "Found existing NVIDIA Container Toolkit."
-        selections[7]=1
+        installed_state[7]=1
     fi
 
     # 8. cuDNN (index 8)
     if dpkg -l | grep -q 'cudnn9-cuda-13'; then
         print_info "Found existing cuDNN installation."
-        selections[8]=1
+        installed_state[8]=1
     fi
 
     # 9. Gemini CLI (index 9)
     if sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v gemini &> /dev/null'; then
         print_info "Found existing Gemini CLI installation."
-        selections[9]=1
+        installed_state[9]=1
     fi
 
     # 10. OpenClaw (index 10)
     if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
         print_info "Found existing OpenClaw installation."
-        selections[10]=1
+        installed_state[10]=1
     fi
 
     # 11. Homebrew (index 11)
     if [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
         print_info "Found existing Homebrew installation."
-        selections[11]=1
+        installed_state[11]=1
     fi
 }
 
@@ -645,7 +645,9 @@ show_menu() {
     echo "---------------------------------"
 
     for i in "${!options[@]}"; do
-        if [[ ${selections[i]} -eq 1 ]]; then
+        if [[ ${installed_state[i]} -eq 1 ]]; then
+            echo -e " \e[1;36m[✓]\e[0m $((i+1)). ${options[$i]}"
+        elif [[ ${selections[i]} -eq 1 ]]; then
             echo -e " \e[1;32m[x]\e[0m $((i+1)). ${options[$i]}"
         else
             echo -e " [ ] $((i+1)). ${options[$i]}"
@@ -661,6 +663,7 @@ main() {
     install_base_dependencies
 
     local selections=(0 0 0 0 0 0 0 0 0 0 0 0)
+    local installed_state=(0 0 0 0 0 0 0 0 0 0 0 0)
     local funcs=(
         update_system
         install_zsh
@@ -684,9 +687,13 @@ main() {
 
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#funcs[@]} ]; then
             local index=$((choice - 1))
-            selections[index]=$((1 - selections[index]))
+            if [[ ${installed_state[index]} -eq 1 ]]; then
+                echo -e "\nOption $((choice)) is already installed." && sleep 1
+            else
+                selections[index]=$((1 - selections[index]))
+            fi
         elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
-            for i in "${!selections[@]}"; do selections[i]=1; done
+            for i in "${!selections[@]}"; do if [[ ${installed_state[i]} -eq 0 ]]; then selections[i]=1; fi; done
         elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
             break
         elif [[ "$choice" == "q" || "$choice" == "Q" ]]; then
@@ -699,7 +706,7 @@ main() {
     echo -e "\n--- Starting Installation ---"
     local something_installed=0
     for i in "${!selections[@]}"; do
-        if [[ ${selections[$i]} -eq 1 ]]; then
+        if [[ ${selections[$i]} -eq 1 && ${installed_state[$i]} -eq 0 ]]; then
             something_installed=1
             ${funcs[$i]}
         fi
