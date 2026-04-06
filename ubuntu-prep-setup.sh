@@ -14,6 +14,11 @@ set -e
 # Global array to track post-installation actions
 POST_INSTALL_ACTIONS=()
 
+# Global vars for target user
+TARGET_USER=""
+TARGET_USER_HOME=""
+IS_DIFFERENT_USER=false
+
 # --- Helper Functions ---
 
 # Function to print colored headings
@@ -66,26 +71,29 @@ install_base_dependencies() {
 }
 # --- Installation Functions ---
 
-# Function to prompt for new user creation
-prompt_for_new_user() {
-    read -p "Do you want to create a new dedicated user for this setup? [y/N]: " confirm_new_user
-    if [[ "$confirm_new_user" == "y" || "$confirm_new_user" == "Y" ]]; then
+# Function to determine the target user for the installation
+determine_target_user() {
+    read -p "Install for current user ($USER) or a different user? [current/different]: " choice
+    if [[ "$choice" == "different" ]]; then
+        IS_DIFFERENT_USER=true
         local username
-        read -p "Enter the new username [openclawuser]: " username
-        username=${username:-openclawuser}
+        read -p "Enter the target username [openclawuser]: " username
+        TARGET_USER=${username:-openclawuser}
 
-        if id "$username" &>/dev/null; then
-            print_info "User '$username' already exists. Skipping creation."
+        if id "$TARGET_USER" &>/dev/null; then
+            print_info "Target user '$TARGET_USER' already exists."
         else
-            print_info "Creating user '$username'..."
-            sudo adduser "$username"
-            print_success "Standard user '$username' created successfully."
+            print_info "Creating user '$TARGET_USER'..."
+            sudo adduser "$TARGET_USER"
+            print_success "Standard user '$TARGET_USER' created successfully."
         fi
-
-        echo -e "\n\e[1;33mIMPORTANT: To continue setup as the new user, you must log in as them.\e[0m"
-        print_info "Exiting script. Please run 'su - $username' and then re-run this setup script."
-        exit 0
+        # Get home directory path correctly, even for non-standard home dirs
+        TARGET_USER_HOME=$(eval echo "~$TARGET_USER")
+    else
+        TARGET_USER=$USER
+        TARGET_USER_HOME=$HOME
     fi
+    print_info "All user-specific files will be installed for user '$TARGET_USER' in '$TARGET_USER_HOME'."
 }
 
 # 0. Update system
@@ -102,40 +110,40 @@ install_zsh() {
     print_info "Installing packages: zsh, tmux, micro"
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zsh tmux micro
 
-    if [ ! -d "$HOME/.oh-my-zsh" ]; then
+    if [ ! -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
         print_info "Installing Oh My Zsh..."
         # The --unattended flag prevents the installer from trying to change the shell, so we do it manually.
-        sh -c "$(wget https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)" "" --unattended
+        sudo -u "$TARGET_USER" sh -c "$(wget https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)" "" --unattended
     else
         print_info "Oh My Zsh is already installed."
     fi
 
     print_info "Setting Zsh as the default shell for the current user..."
-    sudo chsh -s "$(which zsh)" "$USER"
+    sudo chsh -s "$(which zsh)" "$TARGET_USER"
 
     # Define Zsh custom plugins directory
-    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+    local ZSH_CUSTOM="${TARGET_USER_HOME}/.oh-my-zsh/custom"
 
     print_info "Cloning Zsh plugins..."
     # zsh-autosuggestions
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
-        git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
+        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
     fi
     # zsh-syntax-highlighting
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
-        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
     fi
     # zsh-history-substring-search
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-history-substring-search" ]; then
-        git clone https://github.com/zsh-users/zsh-history-substring-search "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"
+        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-history-substring-search "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"
     fi
 
     print_info "Configuring .zshrc..."
     # Replace the default plugins line with the new one
-    sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search)/' ~/.zshrc
+    sudo sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search)/' "$TARGET_USER_HOME/.zshrc"
 
     print_info "Creating ~/.zshenv_secrets template for API keys..."
-    cat <<'EOF' > ~/.zshenv_secrets
+    sudo -u "$TARGET_USER" bash -c "cat <<'EOF' > ~/.zshenv_secrets
 # This file is for storing secrets and API keys.
 # It is sourced by ~/.zshrc if it exists.
 # Make sure this file is NOT committed to version control.
@@ -152,24 +160,25 @@ install_zsh() {
 EOF
 
     # Add sourcing of .zshenv_secrets to .zshrc
-    if ! grep -q ".zshenv_secrets" ~/.zshrc; then
-        echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.zshenv_secrets ]]; then\n  source ~/.zshenv_secrets\nfi' >> ~/.zshrc
+    if ! sudo grep -q ".zshenv_secrets" "$TARGET_USER_HOME/.zshrc"; then
+        echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.zshenv_secrets ]]; then\n  source ~/.zshenv_secrets\nfi' | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
 
     print_info "Enabling true color support for modern terminals..."
-    echo -e '\n# Set COLORTERM to advertise true color support to modern CLI tools\nexport COLORTERM=truecolor' >> ~/.zshrc
+    echo -e '\n# Set COLORTERM to advertise true color support to modern CLI tools\nexport COLORTERM=truecolor' | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
 
     print_info "Adding custom Zsh prompt..."
     # Add custom prompt to override the theme default. Using a heredoc for clarity.
-    cat <<'EOP' >> ~/.zshrc
+    sudo bash -c "cat <<'EOP' >> ${TARGET_USER_HOME}/.zshrc
 
 # Custom prompt showing user@host > path >
 PROMPT="%{$fg_bold[yellow]%}%n@%m%{$reset_color%} > %{$fg[cyan]%}%/%{$reset_color%} > "
 EOP
 
     # Interactive prompt for API keys
-    read -p "Do you want to add API keys now? [y/N]: " add_keys_now
-    if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
+    if [[ "$IS_DIFFERENT_USER" == false ]]; then
+        read -p "Do you want to add API keys now? [y/N]: " add_keys_now
+        if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
         PS3="Please choose how to add your keys: "
         options=("Enter keys one-by-one" "Edit file manually with nano" "Skip")
         select opt in "${options[@]}"; do
@@ -201,6 +210,9 @@ EOP
                 *) echo "Invalid option $REPLY";;
             esac
         done
+        fi
+    else
+        print_info "Skipping interactive API key entry. Please configure for '$TARGET_USER' manually."
     fi
 
     print_success "Zsh and plugins installed."
@@ -237,7 +249,7 @@ install_docker() {
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
     print_info "Adding current user to the 'docker' group..."
-    sudo usermod -aG docker $USER
+    sudo usermod -aG docker "$TARGET_USER"
 
     print_success "Docker installed successfully."
     POST_INSTALL_ACTIONS+=("docker")
@@ -247,18 +259,17 @@ install_docker() {
 install_nvm_node() {
     print_header "Installing NVM, Node.js (LTS), and NPM"
     print_info "Running the NVM installation script silently..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash > /dev/null 2>&1
+    sudo -u "$TARGET_USER" bash -c 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash'
     print_info "NVM installation script executed. Sourcing NVM to continue..."
 
-    # Source NVM for the current script session
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
     print_info "Installing the latest LTS version of Node.js..."
-    nvm install --lts
+    # Run the install as the target user in a login shell to ensure nvm is available
+    sudo -u "$TARGET_USER" -i bash -c 'nvm install --lts'
+    local node_version=$(sudo -u "$TARGET_USER" -i bash -c 'node -v')
+    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c 'npm -v')
 
     print_success "NVM, Node.js, and NPM installed."
-    print_info "Node version: $(node -v), NPM version: $(npm -v)"
+    print_info "Node version: $node_version, NPM version: $npm_version"
     POST_INSTALL_ACTIONS+=("nvm")
 }
 
@@ -331,15 +342,15 @@ install_cuda_toolkit() {
     # We will add it idempotently to the user's shell configuration.
     print_info "Verifying CUDA path in shell configuration..."
     local cuda_path_str='export PATH="/usr/local/cuda/bin:$PATH"'
-    if [ -f "$HOME/.zshrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$HOME/.zshrc"; then
+    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding CUDA path to ~/.zshrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" >> "$HOME/.zshrc"
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$HOME/.bashrc" ] && ! grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$HOME/.bashrc"; then
+    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding CUDA path to ~/.bashrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" >> "$HOME/.bashrc"
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
-
+    
     print_success "CUDA Toolkit installed."
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
@@ -367,32 +378,20 @@ install_cudnn() {
 # 9. Install Google Gemini CLI
 install_gemini_cli_only() {
     print_header "Installing Google Gemini CLI"
-    # Ensure NVM and NPM are available by sourcing NVM if it exists
-    if ! command -v nvm &> /dev/null; then
-        print_info "NVM not found. Attempting to source it for this session..."
-        export NVM_DIR="$HOME/.nvm"
-        if [ -s "$NVM_DIR/nvm.sh" ]; then
-            # shellcheck source=/dev/null
-            \. "$NVM_DIR/nvm.sh"
-        else
-            echo "❌ NVM is not installed. Please run the 'Install NVM' option first."
-            return 1 # Use return to avoid exiting the whole script
-        fi
-    fi
-
-    if ! command -v npm &> /dev/null; then
-        echo "❌ Node.js/NPM is not installed via NVM. Please run option 5 'Install NVM, Node.js & NPM' first."
+    
+    # Check if nvm is installed for the target user
+    if ! sudo -u "$TARGET_USER" -i bash -c 'command -v nvm' &> /dev/null; then
+        echo "❌ NVM is not installed for user '$TARGET_USER'. Please run the 'Install NVM' option first."
         return 1
     fi
 
     print_info "Updating npm to the latest version (globally for the current Node version)..."
-    # Using npm with nvm does not require sudo for global packages
-    npm install -g npm@latest
+    sudo -u "$TARGET_USER" -i bash -c 'npm install -g npm@latest'
 
     print_info "Installing Google Gemini CLI..."
     print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
-    # Using npm with nvm does not require sudo for global packages
-    npm install -g @google/gemini-cli@latest
+    sudo -u "$TARGET_USER" -i bash -c 'npm install -g @google/gemini-cli@latest'
+
     print_success "Google Gemini CLI installed."
     POST_INSTALL_ACTIONS+=("nvm") # Depends on nvm path
 }
@@ -402,24 +401,23 @@ install_openclaw() {
     print_header "Installing OpenClaw"
 
     print_info "Enabling user lingering to allow services to run after logout..."
-    sudo loginctl enable-linger "$(whoami)"
+    sudo loginctl enable-linger "$TARGET_USER"
 
     print_info "Installing OpenClaw..."
-    curl -fsSL https://openclaw.ai/install.sh | bash
+    sudo -u "$TARGET_USER" -i bash -c 'curl -fsSL https://openclaw.ai/install.sh | bash'
 
     print_info "Onboarding OpenClaw and installing daemon..."
-    # The OpenClaw install script adds ~/.local/bin to the PATH in your shell profile.
-    # We add it to the current session's PATH to run the next command.
-    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    export PATH="$HOME/.local/bin:$PATH"
-    openclaw onboard --install-daemon
+    # Run as the target user in a login shell. This sets XDG_RUNTIME_DIR and PATH correctly.
+    sudo -u "$TARGET_USER" -i bash -c 'openclaw onboard --install-daemon'
 
-    local openclaw_config="$HOME/.openclaw/openclaw.json"
+    local openclaw_config="$TARGET_USER_HOME/.openclaw/openclaw.json"
     if [ -f "$openclaw_config" ]; then
         print_info "Updating OpenClaw gateway configuration..."
         # Use jq to safely update the JSON config file
-        jq '.gateway.bind = "0.0.0.0" | .gateway.port = 18789 | .gateway.controlUi.enabled = true' "$openclaw_config" > "${openclaw_config}.tmp" && \
-        mv "${openclaw_config}.tmp" "$openclaw_config"
+        local tmp_json_file
+        tmp_json_file=$(mktemp)
+        sudo jq '.gateway.bind = "0.0.0.0" | .gateway.port = 18789 | .gateway.controlUi.enabled = true' "$openclaw_config" > "$tmp_json_file" && \
+        sudo mv "$tmp_json_file" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
         print_success "OpenClaw gateway configured to bind to 0.0.0.0:18789."
     else
         echo "⚠️  OpenClaw config file not found at ${openclaw_config}. Skipping gateway configuration."
@@ -442,29 +440,28 @@ install_homebrew() {
     print_header "Installing Homebrew"
     # Note: build-essential is installed as part of base_dependencies
 
-    # Check for brew command existence in the standard Linux location
-    if [ ! -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
+    # Homebrew installs under /home/linuxbrew/.linuxbrew, which is shared, but we check as the target user.
+    if ! sudo -u "$TARGET_USER" -i bash -c 'command -v brew' &> /dev/null; then
         print_info "Installing Homebrew non-interactively..."
         # The official non-interactive method. This will also install dependencies.
-        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        sudo -u "$TARGET_USER" -i bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     else
-        print_info "Homebrew executable found."
+        print_info "Homebrew executable found for user '$TARGET_USER'."
     fi
 
-    # The installer adds the path to .profile, but we'll ensure it's in zshrc/bashrc for non-login shells.
+    # The installer should add the path to .profile, but we'll ensure it's in zshrc/bashrc for non-login shells.
     print_info "Verifying Homebrew shell environment in shell configuration..."
     local brew_shellenv_str='eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
-    if [ -f "$HOME/.zshrc" ] && ! grep -Fq "$brew_shellenv_str" "$HOME/.zshrc"; then
+    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -Fq "$brew_shellenv_str" "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding Homebrew shellenv to ~/.zshrc"
-        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" >> "$HOME/.zshrc"
+        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$HOME/.bashrc" ] && ! grep -Fq "$brew_shellenv_str" "$HOME/.bashrc"; then
+    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -Fq "$brew_shellenv_str" "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding Homebrew shellenv to ~/.bashrc"
-        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" >> "$HOME/.bashrc"
+        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
 
-    print_info "Sourcing Homebrew for the current script session..."
-    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+    # No need to source for the current script session, as all brew commands would need to be run via `sudo -u` anyway.
 
     print_success "Homebrew installation process finished."
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
@@ -499,18 +496,18 @@ print_final_summary() {
         echo -e "\e[1;33mYour default shell has been changed to Zsh.\e[0m"
         echo -e "To start using Zsh and activate all newly installed commands (like nvm, node, gemini), you must either:"
         echo -e "  1. \e[1;32mOpen a NEW terminal window.\e[0m (Recommended)"
-        echo -e "  2. OR, paste the following command into your current terminal:"
-        echo "source $HOME/.zshrc"
+        echo -e "  2. OR, if you are logged in as '$TARGET_USER', paste the following command into your current terminal:"
+        echo "source $TARGET_USER_HOME/.zshrc"
         echo "" # Newline for spacing
     elif [[ $path_changed -eq 1 ]]; then
         # Determine the correct rc file based on the user's default shell
         local rc_file=""
-        if [[ "$SHELL" == */zsh ]]; then
-            rc_file="$HOME/.zshrc"
-        elif [[ "$SHELL" == */bash ]]; then
-            rc_file="$HOME/.bashrc"
+        if [ -f "$TARGET_USER_HOME/.zshrc" ]; then
+            rc_file="$TARGET_USER_HOME/.zshrc"
+        elif [ -f "$TARGET_USER_HOME/.bashrc" ]; then
+            rc_file="$TARGET_USER_HOME/.bashrc"
         fi
-        echo -e "\e[1;33mTo activate newly installed commands (like nvm, node, gemini), you must either:\e[0m"
+        echo -e "\e[1;33mTo activate newly installed commands for '$TARGET_USER' (like nvm, node, gemini), they must either:\e[0m"
         echo -e "  1. \e[1;32mOpen a NEW terminal window.\e[0m"
         if [[ -n "$rc_file" ]]; then
             echo -e "  2. OR, run the following command in your CURRENT terminal:"
@@ -560,8 +557,8 @@ show_menu() {
 
 main() {
     check_not_root
-    prompt_for_new_user
     check_os
+    determine_target_user
     update_system
     install_base_dependencies
 
