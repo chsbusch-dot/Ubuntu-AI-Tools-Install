@@ -264,12 +264,13 @@ install_nvm_node() {
     sudo -u "$TARGET_USER" bash -c 'curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash > /dev/null 2>&1'
 
     print_info "Installing the latest LTS version of Node.js..."
-    # Run the install as the target user in a login shell.
-    # Explicitly set NVM_DIR and source nvm.sh within the subshell for immediate use.
-    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; nvm install --lts'
+    # Explicitly set NVM_DIR using the exact target path and source nvm.sh within the subshell.
+    # We use double quotes to inject TARGET_USER_HOME directly, avoiding any $HOME resolution issues with sudo.
+    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+    sudo -u "$TARGET_USER" bash -c "$nvm_cmd; nvm install --lts"
 
-    local node_version=$(sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; node -v')
-    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm -v')
+    local node_version=$(sudo -u "$TARGET_USER" bash -c "$nvm_cmd; node -v")
+    local npm_version=$(sudo -u "$TARGET_USER" bash -c "$nvm_cmd; npm -v")
 
     print_success "NVM, Node.js, and NPM installed."
     print_info "Node version: $node_version, NPM version: $npm_version"
@@ -380,18 +381,20 @@ install_cudnn() {
 install_gemini_cli_only() {
     print_header "Installing Google Gemini CLI"
 
-    # Check if nvm is installed for the target user by attempting to source it and check for 'nvm' command.
-    if ! sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; command -v nvm' &> /dev/null; then
+    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+
+    # Check if nvm is installed for the target user.
+    if ! sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v nvm" &> /dev/null; then
         echo "❌ NVM is not installed for user '$TARGET_USER'. Please run the 'Install NVM' option first."
         return 1
     fi
 
     print_info "Updating npm to the latest version (globally for the current Node version)..."
-    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm install -g npm@latest'
+    sudo -u "$TARGET_USER" bash -c "$nvm_cmd; npm install -g npm@latest"
 
     print_info "Installing Google Gemini CLI..."
     print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
-    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm install -g @google/gemini-cli@latest'
+    sudo -u "$TARGET_USER" bash -c "$nvm_cmd; npm install -g @google/gemini-cli@latest"
     
     print_success "Google Gemini CLI installed."
     POST_INSTALL_ACTIONS+=("nvm") # Depends on nvm path
@@ -493,7 +496,8 @@ check_installations() {
     fi
 
     # 4. NVM/Node (index 4)
-    if [ -d "$TARGET_USER_HOME/.nvm" ] && sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v node &> /dev/null'; then
+    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+    if [ -d "$TARGET_USER_HOME/.nvm" ] && sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v node" &> /dev/null; then
         print_info "Found existing NVM and Node.js installation."
         installed_state[4]=1
     fi
@@ -523,7 +527,8 @@ check_installations() {
     fi
 
     # 9. Gemini CLI (index 9)
-    if sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && command -v gemini &> /dev/null'; then
+    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+    if sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v gemini" &> /dev/null; then
         print_info "Found existing Gemini CLI installation."
         installed_state[9]=1
     fi
