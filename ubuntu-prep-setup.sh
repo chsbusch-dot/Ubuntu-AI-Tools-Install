@@ -266,22 +266,10 @@ install_nvm_node() {
     print_info "Installing the latest LTS version of Node.js..."
     # Run the install as the target user in a login shell.
     # Explicitly set NVM_DIR and source nvm.sh within the subshell for immediate use.
-    sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        nvm install --lts
-    '
+    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; nvm install --lts'
 
-    local node_version=$(sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        node -v
-    ')
-    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        npm -v
-    ')
+    local node_version=$(sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; node -v')
+    local npm_version=$(sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm -v')
 
     print_success "NVM, Node.js, and NPM installed."
     print_info "Node version: $node_version, NPM version: $npm_version"
@@ -393,29 +381,17 @@ install_gemini_cli_only() {
     print_header "Installing Google Gemini CLI"
 
     # Check if nvm is installed for the target user by attempting to source it and check for 'nvm' command.
-    if ! sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        command -v nvm
-    ' &> /dev/null; then
+    if ! sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; command -v nvm' &> /dev/null; then
         echo "❌ NVM is not installed for user '$TARGET_USER'. Please run the 'Install NVM' option first."
         return 1
     fi
 
     print_info "Updating npm to the latest version (globally for the current Node version)..."
-    sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        npm install -g npm@latest
-    '
+    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm install -g npm@latest'
 
     print_info "Installing Google Gemini CLI..."
     print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
-    sudo -u "$TARGET_USER" -i bash -c '
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        npm install -g @google/gemini-cli@latest
-    '
+    sudo -u "$TARGET_USER" -i bash -c 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; npm install -g @google/gemini-cli@latest'
     
     print_success "Google Gemini CLI installed."
     POST_INSTALL_ACTIONS+=("nvm") # Depends on nvm path
