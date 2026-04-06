@@ -537,6 +537,14 @@ install_openclaw() {
         echo "⚠️  OpenClaw config file not found at ${openclaw_config}. Skipping gateway configuration."
     fi
 
+    print_info "Configuring firewall rules for OpenClaw (UFW)..."
+    sudo ufw default deny incoming
+    sudo ufw allow 22/tcp # Ensure SSH access is not blocked
+    sudo ufw allow 18789/tcp # Allow OpenClaw gateway access
+    print_success "UFW rules configured."
+    echo -e "\e[1;33mIMPORTANT: The firewall has been configured but is NOT enabled by default.\e[0m"
+    print_info "To enable the firewall, you can run: sudo ufw enable"
+
     print_success "OpenClaw installation complete."
     POST_INSTALL_ACTIONS+=("nvm") # Modifies path, needs same action as nvm
 }
