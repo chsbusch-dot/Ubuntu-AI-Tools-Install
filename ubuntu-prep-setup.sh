@@ -496,8 +496,7 @@ check_installations() {
     fi
 
     # 4. NVM/Node (index 4)
-    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
-    if [ -d "$TARGET_USER_HOME/.nvm" ] && sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v node" &> /dev/null; then
+    if sudo test -s "$TARGET_USER_HOME/.nvm/nvm.sh" && sudo bash -c "ls $TARGET_USER_HOME/.nvm/versions/node/*/bin/node" &> /dev/null; then
         print_info "Found existing NVM and Node.js installation."
         installed_state[4]=1
     fi
@@ -527,8 +526,7 @@ check_installations() {
     fi
 
     # 9. Gemini CLI (index 9)
-    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
-    if sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v gemini" &> /dev/null; then
+    if sudo bash -c "ls $TARGET_USER_HOME/.nvm/versions/node/*/bin/gemini" &> /dev/null; then
         print_info "Found existing Gemini CLI installation."
         installed_state[9]=1
     fi
