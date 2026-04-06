@@ -276,6 +276,7 @@ install_nvm_node() {
 # 5. Install NVIDIA vGPU Driver
 install_vgpu_driver_from_link() {
     print_header "Installing NVIDIA vGPU Driver from Direct Link"
+   5
     read -p "Do you want to install the vGPU guest driver from a direct link? [y/N]: " confirm_vgpu
     if [[ "$confirm_vgpu" != "y" && "$confirm_vgpu" != "Y" ]]; then
         print_info "Skipping vGPU driver installation."
@@ -299,32 +300,29 @@ install_vgpu_driver_from_link() {
     tmp_dir=$(mktemp -d)
     trap 'rm -rf -- "$tmp_dir"' EXIT
 
-    local downloaded_file_path="${tmp_dir}/vgpu_driver_download"
+    local downloaded_file_path="${tmp_dir}/nvidia-vgpu-driver.deb"
 
     print_info "Downloading vGPU driver from your provided link..."
     # Use wget, which is generally more robust for different server types.
-    if ! wget --no-check-certificate "$vgpu_driver_url" -O "$downloaded_file_path"; then
+    if ! wget --no-check-certificate "$vgpu_driver_url" -O "$downloaded_file_path"
+    then
         echo "❌ Failed to download the driver. Please check the URL in the script."
         return 1
     fi
     print_success "Download complete."
 
-    local deb_file=""
-    if [[ "$(file -b --mime-type "$downloaded_file_path")" == "application/zip" ]]; then
-        print_info "Unzipping the downloaded archive..."
-        unzip -o -q "$downloaded_file_path" -d "$tmp_dir"
-        deb_file=$(find "$tmp_dir" -name '*.deb' | head -n 1)
-    elif [[ "$(file -b --mime-type "$downloaded_file_path")" == "application/vnd.debian.binary-package" ]]; then
-        deb_file="$downloaded_file_path"
-    fi
+    print_info "Setting permissions on the downloaded driver file..."
+    chmod 777 "$downloaded_file_path"
+    print_success "Permissions set to 777."
 
-    if [[ -n "$deb_file" ]]; then
-        print_info "Installing driver from ${deb_file}..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb_file"
+    if [[ -f "$downloaded_file_path" ]]; then
+        print_info "Installing driver from ${downloaded_file_path}..."
+        # Use dpkg for local .deb files, then apt-get -f install to fix dependencies.
+        sudo dpkg -i "$downloaded_file_path" || sudo apt-get -f install -y
         print_success "vGPU driver installed successfully."
         POST_INSTALL_ACTIONS+=("reboot")
     else
-        echo "❌ Could not find a .deb file in the downloaded file. Please ensure the link points to a .deb or a .zip containing a .deb."
+        echo "❌ Downloaded file not found at ${downloaded_file_path}."
     fi
 
     trap - EXIT
