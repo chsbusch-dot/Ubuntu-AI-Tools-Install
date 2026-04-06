@@ -7,6 +7,7 @@
 #
 # Reference: https://discourse.ubuntu.com/t/my-powerful-zsh-profile/47395
 #
+# 4/6/2026 Release 1.0 - Initial version with core functionality.
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
