@@ -139,6 +139,8 @@ setup_env_secrets() {
 # export GOOGLE_API_KEY="your_google_api_key"
 # export CLAUDE_API_KEY="your_claude_key"
 # export NVIDIA_API_KEY="your_nvidia_api_key"
+# export NVIDIA_VGPU_DRIVER_URL="ftp://192.168.1.31/shared/.../nvidia.deb"
+# export NVIDIA_VGPU_FTP_AUTH="admin:password"
 EOF
     fi
 
@@ -159,6 +161,7 @@ EOF
                         keys_to_prompt=(
                             "GITHUB_TOKEN" "AWS_SECRET_ACCESS_KEY" "OPENAI_API_KEY"
                             "GOOGLE_API_KEY" "CLAUDE_API_KEY" "NVIDIA_API_KEY"
+                            "NVIDIA_VGPU_DRIVER_URL" "NVIDIA_VGPU_FTP_AUTH"
                         )
                         for key_name in "${keys_to_prompt[@]}"; do
                             read -p "Enter value for ${key_name}: " key_value
@@ -338,13 +341,19 @@ install_vgpu_driver_from_link() {
         return 0 # Exit the function gracefully
     fi
 
-    print_info "Please provide the direct download URL OR a Google Drive sharing link for the vGPU driver."
-    echo -e "\e[1;33mGoogle Drive sharing links will be automatically processed.\e[0m"
-    print_info "Example Google Drive link:"
-    echo 'https://drive.google.com/file/d/1qrZOFktPq2Z7tnM7YGPIdTPNUT1stZZW/view?usp=share_link'
+    # Source secrets file if it exists to retrieve URL and Auth
+    if [[ -f "$TARGET_USER_HOME/.env.secrets" ]]; then
+        source "$TARGET_USER_HOME/.env.secrets"
+    fi
 
-    local vgpu_driver_url=""
-    read -p "Enter the download URL: " vgpu_driver_url
+    local vgpu_driver_url="${NVIDIA_VGPU_DRIVER_URL}"
+    local ftp_auth="${NVIDIA_VGPU_FTP_AUTH}"
+
+    if [[ -z "$vgpu_driver_url" ]]; then
+        print_info "Please provide the direct download URL OR a Google Drive sharing link for the vGPU driver."
+        print_info "Example FTP link: ftp://192.168.1.31/shared/.../nvidia.deb"
+        read -p "Enter the download URL: " vgpu_driver_url
+    fi
 
     if [[ -z "$vgpu_driver_url" ]]; then
         echo "❌ No URL provided. Skipping vGPU driver installation."
@@ -374,9 +383,15 @@ install_vgpu_driver_from_link() {
             curl -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}"
         fi
     else
-        # Use wget for regular direct URLs
-        if ! wget -q --show-progress --no-check-certificate "$vgpu_driver_url" -O "$downloaded_file_path"; then
-            echo "❌ Failed to download the driver. Please check the URL."
+        # Use curl for regular direct URLs and FTP
+        local curl_cmd=(curl -L -# -o "$downloaded_file_path")
+        if [[ -n "$ftp_auth" ]]; then
+            curl_cmd+=("-u" "$ftp_auth")
+        fi
+        curl_cmd+=("$vgpu_driver_url")
+
+        if ! "${curl_cmd[@]}"; then
+            echo "❌ Failed to download the driver. Please check the URL and authentication."
             return 1
         fi
     fi
