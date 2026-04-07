@@ -150,7 +150,7 @@ EOF
 
     # Interactive prompt for API keys
     if [[ "$IS_DIFFERENT_USER" == false ]]; then
-        read -p "Do you want to add API keys now? [y/N]: " add_keys_now
+        read -p "Do you want to edit your API keys now? [Y/N]: " add_keys_now
         if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
             PS3="Please choose how to add your keys: "
             options=("Enter keys one-by-one" "Edit file manually with nano" "Skip")
@@ -457,6 +457,14 @@ install_container_toolkit() {
         sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit
+
+    print_info "Configuring Docker to use NVIDIA runtime..."
+    sudo nvidia-ctk runtime configure --runtime=docker
+    sudo systemctl restart docker
+
+    print_info "Testing NVIDIA Container Toolkit (this may download a container image)..."
+    sudo docker run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi || \
+        echo "⚠️ Docker NVIDIA test failed. A reboot is likely required to load the NVIDIA drivers."
 }
 
 # 8. Install cuDNN
@@ -645,6 +653,32 @@ print_final_summary() {
     # Make array unique by converting to a string, sorting, and converting back
     local unique_actions
     unique_actions=$(echo "${POST_INSTALL_ACTIONS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+    print_header "Installation Verification & Versions"
+
+    if command -v nvidia-smi &> /dev/null; then
+        print_info "NVIDIA GPU/vGPU Driver:"
+        nvidia-smi
+        echo ""
+    fi
+
+    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+        print_info "CUDA Toolkit:"
+        /usr/local/cuda/bin/nvcc --version
+        echo ""
+    fi
+
+    if command -v nvidia-ctk &> /dev/null; then
+        print_info "NVIDIA Container Toolkit:"
+        nvidia-ctk --version
+        echo ""
+    fi
+
+    if dpkg -l | grep -q libcudnn; then
+        print_info "cuDNN Library:"
+        dpkg -l | grep libcudnn
+        echo ""
+    fi
 
     if [[ -z "$unique_actions" ]]; then
         return
