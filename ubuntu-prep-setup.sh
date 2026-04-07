@@ -19,6 +19,8 @@ POST_INSTALL_ACTIONS=()
 TARGET_USER=""
 TARGET_USER_HOME=""
 IS_DIFFERENT_USER=false
+HAS_NVIDIA_GPU=false
+GPU_STATUS=""
 
 # --- Helper Functions ---
 
@@ -100,6 +102,22 @@ determine_target_user() {
         TARGET_USER_HOME=$HOME
     fi
     print_info "All user-specific files will be installed for user '$TARGET_USER' in '$TARGET_USER_HOME'."
+}
+
+# Function to detect NVIDIA GPU presence
+detect_gpu() {
+    if command -v lspci &> /dev/null; then
+        if lspci | grep -iq 'nvidia'; then
+            GPU_STATUS="\e[1;32mNVIDIA GPU/vGPU Detected\e[0m"
+            HAS_NVIDIA_GPU=true
+        else
+            GPU_STATUS="\e[1;33mNo NVIDIA GPU/vGPU Detected\e[0m"
+            HAS_NVIDIA_GPU=false
+        fi
+    else
+        GPU_STATUS="\e[1;33mNVIDIA GPU status unknown (pciutils missing)\e[0m"
+        HAS_NVIDIA_GPU=false
+    fi
 }
 
 # Function to configure API keys for either bash or zsh
@@ -320,13 +338,13 @@ install_vgpu_driver_from_link() {
         return 0 # Exit the function gracefully
     fi
 
-    print_info "Please provide the direct download URL for the vGPU driver."
-    echo -e "\e[1;33mThis must be a direct link that works with curl, not a sharing page.\e[0m"
-    print_info "Example of a valid link inside a curl command:"
-    echo 'curl -L "https://drive.usercontent.google.com/download?id=..." -o nvidia.deb'
+    print_info "Please provide the direct download URL OR a Google Drive sharing link for the vGPU driver."
+    echo -e "\e[1;33mGoogle Drive sharing links will be automatically processed.\e[0m"
+    print_info "Example Google Drive link:"
+    echo 'https://drive.google.com/file/d/1qrZOFktPq2Z7tnM7YGPIdTPNUT1stZZW/view?usp=share_link'
 
     local vgpu_driver_url=""
-    read -p "Enter the direct download URL: " vgpu_driver_url
+    read -p "Enter the download URL: " vgpu_driver_url
 
     if [[ -z "$vgpu_driver_url" ]]; then
         echo "❌ No URL provided. Skipping vGPU driver installation."
@@ -340,13 +358,36 @@ install_vgpu_driver_from_link() {
     local downloaded_file_path="${tmp_dir}/nvidia-vgpu-driver.deb"
 
     print_info "Downloading vGPU driver from your provided link..."
-    # Use wget, which is generally more robust for different server types.
-    if ! wget --no-check-certificate "$vgpu_driver_url" -O "$downloaded_file_path"
-    then
-        echo "❌ Failed to download the driver. Please check the URL in the script."
+    
+    if [[ "$vgpu_driver_url" =~ drive\.google\.com/file/d/([a-zA-Z0-9_-]+) ]]; then
+        local file_id="${BASH_REMATCH[1]}"
+        print_info "Google Drive share link detected. Extracting file ID: $file_id"
+        print_info "Bypassing Google Drive virus scan warning for large files..."
+        
+        local confirm_token
+        confirm_token=$(curl -sc "${tmp_dir}/cookies.txt" "https://drive.google.com/uc?export=download&id=${file_id}" | grep -o 'confirm=[^&"'\'' ]*' | sed 's/confirm=//' | head -n 1)
+        
+        if [[ -n "$confirm_token" ]]; then
+            curl -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}&confirm=${confirm_token}"
+        else
+            # Token not found, attempt downloading directly
+            curl -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}"
+        fi
+    else
+        # Use wget for regular direct URLs
+        if ! wget -q --show-progress --no-check-certificate "$vgpu_driver_url" -O "$downloaded_file_path"; then
+            echo "❌ Failed to download the driver. Please check the URL."
+            return 1
+        fi
+    fi
+
+    # Safety check to ensure we didn't download an HTML error page
+    if file -b --mime-type "$downloaded_file_path" | grep -q "text/html"; then
+        echo "❌ Downloaded file is an HTML page, not a valid driver archive."
+        echo "This usually happens if the link is restricted or incorrect."
         return 1
     fi
-    print_success "Download complete."
+    print_success "Download complete and verified."
 
     if [[ -f "$downloaded_file_path" ]]; then
         print_info "Installing driver from ${downloaded_file_path}..."
@@ -640,18 +681,6 @@ print_final_summary() {
 # --- Main Menu ---
 
 show_menu() {
-    # Hardware check for NVIDIA GPU/vGPU
-    local gpu_status="\e[1;33mChecking...\e[0m"
-    if command -v lspci &> /dev/null; then
-        if lspci | grep -iq 'nvidia'; then
-            gpu_status="\e[1;32mNVIDIA GPU/vGPU Detected\e[0m"
-        else
-            gpu_status="\e[1;33mNo NVIDIA GPU/vGPU Detected\e[0m"
-        fi
-    else
-        gpu_status="\e[1;33mNVIDIA GPU status unknown (pciutils missing)\e[0m"
-    fi
-
     # This function takes the selection array by reference to display the state
     local options=(
         "Update System Packages (apt update && upgrade)"
@@ -670,18 +699,31 @@ show_menu() {
 
     clear
     echo -e "\n\e[1;35m--- Ubuntu Prep Script Menu ---\e[0m"
-    echo -e "Hardware: $gpu_status"
+    echo -e "Hardware: $GPU_STATUS"
     echo "Use numbers [1-12] to toggle an option. Press 'a' to select all."
     echo "Press 'i' to install selected, or 'q' to quit."
     echo "---------------------------------"
 
     for i in "${!options[@]}"; do
+        # Hide NVIDIA options (indices 7 to 10) if no GPU is detected
+        if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $i -ge 7 && $i -le 10 ]]; then
+            continue
+        fi
+
+        if [[ $i -eq 7 && "$HAS_NVIDIA_GPU" == true ]]; then
+            echo "" # Empty line before option 8
+        fi
+
         if [[ ${installed_state[i]} -eq 1 ]]; then
             echo -e " \e[1;36m[✓]\e[0m $((i+1)). ${options[$i]}"
         elif [[ ${selections[i]} -eq 1 ]]; then
             echo -e " \e[1;32m[x]\e[0m $((i+1)). ${options[$i]}"
         else
             echo -e " [ ] $((i+1)). ${options[$i]}"
+        fi
+
+        if [[ $i -eq 10 && "$HAS_NVIDIA_GPU" == true ]]; then
+            echo "" # Empty line after the NVIDIA block (option 11)
         fi
     done
     echo "---------------------------------"
@@ -691,6 +733,7 @@ main() {
     check_not_root
     check_os
     determine_target_user
+    detect_gpu
 
     local selections=(0 0 0 0 0 0 0 0 0 0 0 0)
     local installed_state=(0 0 0 0 0 0 0 0 0 0 0 0)
@@ -717,13 +760,20 @@ main() {
 
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#funcs[@]} ]; then
             local index=$((choice - 1))
-            if [[ ${installed_state[index]} -eq 1 ]]; then
+            if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $index -ge 7 && $index -le 10 ]]; then
+                echo -e "\nOption $((choice)) is not available (No NVIDIA GPU detected)." && sleep 1
+            elif [[ ${installed_state[index]} -eq 1 ]]; then
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
                 selections[index]=$((1 - selections[index]))
             fi
         elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
-            for i in "${!selections[@]}"; do if [[ ${installed_state[i]} -eq 0 ]]; then selections[i]=1; fi; done
+            for i in "${!selections[@]}"; do 
+                if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $i -ge 7 && $i -le 10 ]]; then
+                    continue
+                fi
+                if [[ ${installed_state[i]} -eq 0 ]]; then selections[i]=1; fi
+            done
         elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
             break
         elif [[ "$choice" == "q" || "$choice" == "Q" ]]; then
