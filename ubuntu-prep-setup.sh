@@ -346,8 +346,9 @@ install_vgpu_driver_from_link() {
         source "$TARGET_USER_HOME/.env.secrets"
     fi
 
-    local vgpu_driver_url="${NVIDIA_VGPU_DRIVER_URL}"
-    local ftp_auth="${NVIDIA_VGPU_FTP_AUTH}"
+    # Strip potential hidden carriage returns (\r) in case the file was saved with Windows line endings (CRLF)
+    local vgpu_driver_url="${NVIDIA_VGPU_DRIVER_URL//$'\r'/}"
+    local ftp_auth="${NVIDIA_VGPU_FTP_AUTH//$'\r'/}"
 
     if [[ -z "$vgpu_driver_url" ]]; then
         print_info "Please provide the direct download URL OR a Google Drive sharing link for the vGPU driver."
