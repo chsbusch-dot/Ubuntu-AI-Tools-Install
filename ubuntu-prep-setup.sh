@@ -434,13 +434,14 @@ install_cuda_toolkit() {
     # We will add it idempotently to the user's shell configuration.
     print_info "Verifying CUDA path in shell configuration..."
     local cuda_path_str='export PATH="/usr/local/cuda/bin:$PATH"'
+    local cuda_lib_str='export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"'
     if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding CUDA path to ~/.zshrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}\n${cuda_lib_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
     if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding CUDA path to ~/.bashrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}\n${cuda_lib_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
     
     print_success "CUDA Toolkit installed."
@@ -826,6 +827,21 @@ main() {
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
                 selections[index]=$((1 - selections[index]))
+
+                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 11) require NVM (index 4)
+                if [[ ($index -eq 6 || $index -eq 11) && ${selections[$index]} -eq 1 && ${installed_state[4]} -eq 0 ]]; then
+                    if [[ ${selections[4]} -eq 0 ]]; then
+                        selections[4]=1
+                        echo -e "\n[Auto-selected] Option 5 (NVM/Node.js) is required for this installation." && sleep 1.5
+                    fi
+                elif [[ $index -eq 4 && ${selections[4]} -eq 0 ]]; then
+                    local unselected_deps=0
+                    if [[ ${selections[6]} -eq 1 ]]; then selections[6]=0; unselected_deps=1; fi
+                    if [[ ${selections[11]} -eq 1 ]]; then selections[11]=0; unselected_deps=1; fi
+                    if [[ $unselected_deps -eq 1 ]]; then
+                        echo -e "\n[Auto-unselected] Gemini and/or OpenClaw were unselected because they require NVM." && sleep 2
+                    fi
+                fi
             fi
         elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
             for i in "${!selections[@]}"; do 
