@@ -1014,9 +1014,23 @@ main() {
     determine_target_user
     detect_gpu
 
-    local selections=(0 0 0 0 0 0 0 0 0 0 0 0 0)
-    local installed_state=(0 0 0 0 0 0 0 0 0 0 0 0 0)
-    local funcs=(
+    local MASTER_OPTIONS=(
+        "Update System Packages (apt update && upgrade)"
+        "Install Oh My Zsh & Dev Tools (git, tmux, micro)"
+        "Install Python Environment"
+        "Install Docker and Docker Compose"
+        "Install NVM, Node.js & NPM"
+        "Install Homebrew"
+        "Install Google Gemini CLI"
+        "Install NVIDIA vGPU Driver"
+        "Install CUDA Toolkit"
+        "Install NVIDIA Container Toolkit"
+        "Install cuDNN"
+        "Install OpenClaw"
+        "Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)"
+    )
+
+    local MASTER_FUNCS=(
         update_system
         install_zsh
         install_python
@@ -1032,21 +1046,53 @@ main() {
         install_local_llm
     )
 
+    local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local ACTIVE_INDICES=()
+    local UI_TO_MASTER=()
+
+    ensure_active_index() {
+        local idx=$1
+        if [[ ! " ${ACTIVE_INDICES[*]} " =~ " ${idx} " ]]; then
+            ACTIVE_INDICES+=($idx)
+            IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
+            unset IFS
+        fi
+    }
+
+    echo -e "\n\e[1;36mSelect Installation Goals (space-separated, e.g., 1 2 3):\e[0m"
+    echo "  1. OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
+    echo "  2. VGPU Setup (NVIDIA Driver, CUDA, Container Toolkit, cuDNN)"
+    echo "  3. Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
+    read -p "Your choices [1 2 3]: " goal_choices
+    goal_choices=${goal_choices:-1 2 3}
+
+    if [[ " $goal_choices " =~ " 1 " ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 11); fi
+    if [[ " $goal_choices " =~ " 2 " ]]; then ACTIVE_INDICES+=(7 8 9 10); fi
+    if [[ " $goal_choices " =~ " 3 " ]]; then ACTIVE_INDICES+=(12); fi
+
+    if [ ${#ACTIVE_INDICES[@]} -eq 0 ]; then
+        echo "No goals selected. Exiting."
+        exit 0
+    fi
+
+    IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
+    unset IFS
+
     check_installations
 
     while true; do
         show_menu
         read -p "Your choice: " choice
 
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#funcs[@]} ]; then
-            local index=$((choice - 1))
-            if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $index -ge 7 && $index -le 10 ]]; then
-                echo -e "\nOption $((choice)) is not available (No NVIDIA GPU detected)." && sleep 1
-            elif [[ ${installed_state[index]} -eq 1 ]]; then
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#UI_TO_MASTER[@]} ]; then
+            local master_index=${UI_TO_MASTER[$choice]}
+            
+            if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
                 # Sub-menu for Local LLM Stack (index 12)
-                if [[ $index -eq 12 && ${selections[12]} -eq 0 ]]; then
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
                     echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
                     echo "  1. Ollama"
                     echo "  2. llama.cpp with CPU"
@@ -1056,50 +1102,48 @@ main() {
                         1) LLM_BACKEND_CHOICE="ollama" ;;
                         2) LLM_BACKEND_CHOICE="llama_cpu" ;;
                         3) LLM_BACKEND_CHOICE="llama_cuda" ;;
-                        *) echo -e "\nInvalid choice. Cancelling option 13." && sleep 1; continue ;;
+                        *) echo -e "\nInvalid choice. Cancelling option." && sleep 1; continue ;;
                     esac
                 fi
 
-                selections[index]=$((1 - selections[index]))
+                MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
 
-                if [[ $index -eq 12 && ${selections[12]} -eq 0 ]]; then
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
                     LLM_BACKEND_CHOICE=""
                 fi
 
                 # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 11) require NVM (index 4)
-                if [[ ($index -eq 6 || $index -eq 11) && ${selections[$index]} -eq 1 && ${installed_state[4]} -eq 0 ]]; then
-                    if [[ ${selections[4]} -eq 0 ]]; then
-                        selections[4]=1
-                        echo -e "\n[Auto-selected] Option 5 (NVM/Node.js) is required for this installation." && sleep 1.5
+                if [[ ($master_index -eq 6 || $master_index -eq 11) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
+                    if [[ ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
+                        MASTER_SELECTIONS[4]=1
+                        ensure_active_index 4
+                        echo -e "\n[Auto-selected] NVM/Node.js is required for this installation." && sleep 1.5
                     fi
-                elif [[ $index -eq 4 && ${selections[4]} -eq 0 ]]; then
+                elif [[ $master_index -eq 4 && ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                     local unselected_deps=0
-                    if [[ ${selections[6]} -eq 1 ]]; then selections[6]=0; unselected_deps=1; fi
-                    if [[ ${selections[11]} -eq 1 ]]; then selections[11]=0; unselected_deps=1; fi
+                    if [[ ${MASTER_SELECTIONS[6]} -eq 1 ]]; then MASTER_SELECTIONS[6]=0; unselected_deps=1; fi
+                    if [[ ${MASTER_SELECTIONS[11]} -eq 1 ]]; then MASTER_SELECTIONS[11]=0; unselected_deps=1; fi
                     if [[ $unselected_deps -eq 1 ]]; then
                         echo -e "\n[Auto-unselected] Gemini and/or OpenClaw were unselected because they require NVM." && sleep 2
                     fi
                 fi
 
                 # Dependency logic for Local LLM Stack (index 12)
-                if [[ $index -eq 12 && ${selections[12]} -eq 1 ]]; then
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 1 ]]; then
                     local auto_selected=""
-                    if [[ ${selections[3]} -eq 0 && ${installed_state[3]} -eq 0 ]]; then selections[3]=1; auto_selected+="Docker, "; fi
-                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${selections[8]} -eq 0 && ${installed_state[8]} -eq 0 ]]; then selections[8]=1; auto_selected+="CUDA Toolkit, "; fi
-                    if [[ "$HAS_NVIDIA_GPU" == true && ${selections[9]} -eq 0 && ${installed_state[9]} -eq 0 ]]; then selections[9]=1; auto_selected+="NVIDIA CTK, "; fi
+                    if [[ ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
+                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[8]} -eq 0 && ${MASTER_INSTALLED_STATE[8]} -eq 0 ]]; then MASTER_SELECTIONS[8]=1; ensure_active_index 8; auto_selected+="CUDA Toolkit, "; fi
+                    if [[ "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[9]} -eq 0 && ${MASTER_INSTALLED_STATE[9]} -eq 0 ]]; then MASTER_SELECTIONS[9]=1; ensure_active_index 9; auto_selected+="NVIDIA CTK, "; fi
                     if [[ -n "$auto_selected" ]]; then
                         echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
                     fi
                 fi
             fi
         elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
-            for i in "${!selections[@]}"; do 
-                if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $i -ge 7 && $i -le 10 ]]; then
-                    continue
-                fi
-                if [[ ${installed_state[i]} -eq 0 ]]; then 
-                    selections[i]=1
-                    if [[ $i -eq 12 && -z "$LLM_BACKEND_CHOICE" ]]; then LLM_BACKEND_CHOICE="ollama"; fi
+            for master_index in "${ACTIVE_INDICES[@]}"; do 
+                if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 0 ]]; then 
+                    MASTER_SELECTIONS[$master_index]=1
+                    if [[ $master_index -eq 12 && -z "$LLM_BACKEND_CHOICE" ]]; then LLM_BACKEND_CHOICE="ollama"; fi
                 fi
             done
         elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
@@ -1116,8 +1160,8 @@ main() {
 
     echo -e "\n--- Starting Installation ---"
     local something_installed=0
-    for i in "${!selections[@]}"; do
-        if [[ ${selections[$i]} -eq 1 && ${installed_state[$i]} -eq 0 ]]; then
+    for i in "${!MASTER_SELECTIONS[@]}"; do
+        if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
             something_installed=1
             break
         fi
@@ -1126,9 +1170,9 @@ main() {
     if [[ $something_installed -eq 1 ]]; then
         install_base_dependencies
         
-        for i in "${!selections[@]}"; do
-            if [[ ${selections[$i]} -eq 1 && ${installed_state[$i]} -eq 0 ]]; then
-                ${funcs[$i]}
+        for i in "${!MASTER_SELECTIONS[@]}"; do
+            if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
+                ${MASTER_FUNCS[$i]}
             fi
         done
 
@@ -1149,7 +1193,7 @@ main() {
         echo -e "\n\e[1;32m================================================================\e[0m"
         echo -e "\e[1;32mINSTALLATION COMPLETE!\e[0m"
         echo -e "\e[1;33mPlease run the following command to activate your new environment:\e[0m"
-        if [ -f "$TARGET_USER_HOME/.zshrc" ] && [[ "$SHELL" == *"zsh"* || "${selections[1]}" == "1" ]]; then
+        if [ -f "$TARGET_USER_HOME/.zshrc" ] && [[ "$SHELL" == *"zsh"* || "${MASTER_SELECTIONS[1]}" == "1" || "${MASTER_INSTALLED_STATE[1]}" == "1" ]]; then
             echo -e "\e[1;36msource ~/.zshrc\e[0m"
         else
             echo -e "\e[1;36msource ~/.bashrc\e[0m"
