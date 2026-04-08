@@ -513,16 +513,42 @@ install_openclaw() {
         return 1
     fi
 
+    print_info "Temporarily granting passwordless sudo to '$TARGET_USER' to allow OpenClaw to install dependencies..."
+    echo "$TARGET_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/99-temp-$TARGET_USER" > /dev/null
+
     print_info "Enabling user lingering to allow services to run after logout..."
     sudo loginctl enable-linger "$TARGET_USER"
 
-    print_info "Installing OpenClaw..."
-    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && $nvm_cmd; curl -fsSL https://openclaw.ai/install.sh | bash"
+    print_info "Starting user systemd instance..."
+    sudo systemctl start "user@$(id -u "$TARGET_USER").service"
 
-    print_info "Onboarding OpenClaw and installing daemon..."
-    # Run as the target user, explicitly sourcing NVM so Node is available.
-    # We also need to ensure ~/.local/bin is in the PATH for the openclaw command.
-    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && $nvm_cmd; export PATH=\"\$HOME/.local/bin:\$PATH\"; export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; openclaw onboard --install-daemon"
+    print_info "Installing OpenClaw and onboarding daemon..."
+    # Run as the target user via su to ensure a full login environment.
+    su - "$TARGET_USER" -c '
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+        
+        # Source secrets so OpenClaw automatically uses configured API keys
+        [ -f "$HOME/.env.secrets" ] && source "$HOME/.env.secrets"
+        
+        # Load Homebrew if it exists so OpenClaw can use it to install skills
+        [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ] && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        
+        # Load CUDA paths if they exist
+        [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH"
+        [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+        
+        curl -fsSL https://openclaw.ai/install.sh | bash
+        
+        export PATH="$HOME/.local/bin:$PATH"
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+        
+        openclaw onboard --install-daemon
+    '
+
+    print_info "Revoking temporary sudo privileges..."
+    sudo rm -f "/etc/sudoers.d/99-temp-$TARGET_USER"
 
     local openclaw_config="$TARGET_USER_HOME/.openclaw/openclaw.json"
     if [ -f "$openclaw_config" ]; then
