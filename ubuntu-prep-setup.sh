@@ -98,8 +98,16 @@ determine_target_user() {
     if [[ "$choice" == "2" ]]; then
         IS_DIFFERENT_USER=true
         local username
-        read -p "Enter the target username [openclawuser]: " username
-        TARGET_USER=${username:-openclawuser}
+        while true; do
+            read -p "Enter the target username [openclawuser]: " username
+            TARGET_USER=${username:-openclawuser}
+            
+            if [[ "$TARGET_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+                break
+            else
+                echo -e "❌ \e[1;31mInvalid username format.\e[0m Usernames must start with a lowercase letter or underscore, and only contain lowercase letters, numbers, dashes, or underscores."
+            fi
+        done
 
         if id "$TARGET_USER" &>/dev/null; then
             print_info "Target user '$TARGET_USER' already exists."
@@ -864,19 +872,19 @@ check_installations() {
         MASTER_INSTALLED_STATE[10]=1
     fi
 
-    # 11. OpenClaw (index 11)
-    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
-        print_info "Found existing OpenClaw installation."
-        MASTER_INSTALLED_STATE[11]=1
-    fi
-
-    # 12. Local LLM Stack (index 12)
+    # 11. Local LLM Stack (index 11)
     local llm_installed=1
     if [ ! -f "$TARGET_USER_HOME/llama.cpp/build/bin/llama-server" ]; then llm_installed=0; fi
     if ! command -v ollama &> /dev/null; then llm_installed=0; fi
     if ! sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^open-webui$'; then llm_installed=0; fi
     if [[ $llm_installed -eq 1 ]]; then
         print_info "Found existing Local LLM Stack (Ollama, llama.cpp, Open-WebUI)."
+        MASTER_INSTALLED_STATE[11]=1
+    fi
+
+    # 12. OpenClaw (index 12)
+    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
+        print_info "Found existing OpenClaw installation."
         MASTER_INSTALLED_STATE[12]=1
     fi
 }
@@ -980,7 +988,7 @@ show_menu() {
 
         # Visual grouping
         if [[ $master_index -eq 7 && "$HAS_NVIDIA_GPU" == true ]]; then menu_body+="\n"; fi
-        if [[ $master_index -eq 12 ]]; then menu_body+="\n"; fi
+        if [[ $master_index -eq 11 || $master_index -eq 12 ]]; then menu_body+="\n"; fi
 
         local line=""
         if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
@@ -1026,8 +1034,8 @@ main() {
         "Install CUDA Toolkit"
         "Install NVIDIA Container Toolkit"
         "Install cuDNN"
-        "Install OpenClaw"
         "Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)"
+        "Install OpenClaw"
     )
 
     local MASTER_FUNCS=(
@@ -1042,8 +1050,8 @@ main() {
         install_cuda_toolkit
         install_container_toolkit
         install_cudnn
-        install_openclaw
         install_local_llm
+        install_openclaw
     )
 
     local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0)
@@ -1100,9 +1108,9 @@ main() {
         fi
     done
 
-    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 11); fi
+    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 12); fi
     if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10); fi
-    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(12); fi
+    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(11); fi
 
     IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
     unset IFS
@@ -1119,8 +1127,8 @@ main() {
             if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
-                # Sub-menu for Local LLM Stack (index 12)
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
+                # Sub-menu for Local LLM Stack (index 11)
+                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 0 ]]; then
                     echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
                     echo "  1. Ollama"
                     echo "  2. llama.cpp with CPU"
@@ -1136,12 +1144,12 @@ main() {
 
                 MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
 
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
+                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 0 ]]; then
                     LLM_BACKEND_CHOICE=""
                 fi
 
-                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 11) require NVM (index 4)
-                if [[ ($master_index -eq 6 || $master_index -eq 11) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
+                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 12) require NVM (index 4)
+                if [[ ($master_index -eq 6 || $master_index -eq 12) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
                     if [[ ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                         MASTER_SELECTIONS[4]=1
                         ensure_active_index 4
@@ -1150,14 +1158,14 @@ main() {
                 elif [[ $master_index -eq 4 && ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                     local unselected_deps=0
                     if [[ ${MASTER_SELECTIONS[6]} -eq 1 ]]; then MASTER_SELECTIONS[6]=0; unselected_deps=1; fi
-                    if [[ ${MASTER_SELECTIONS[11]} -eq 1 ]]; then MASTER_SELECTIONS[11]=0; unselected_deps=1; fi
+                    if [[ ${MASTER_SELECTIONS[12]} -eq 1 ]]; then MASTER_SELECTIONS[12]=0; unselected_deps=1; fi
                     if [[ $unselected_deps -eq 1 ]]; then
                         echo -e "\n[Auto-unselected] Gemini and/or OpenClaw were unselected because they require NVM." && sleep 2
                     fi
                 fi
 
-                # Dependency logic for Local LLM Stack (index 12)
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 1 ]]; then
+                # Dependency logic for Local LLM Stack (index 11)
+                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 1 ]]; then
                     local auto_selected=""
                     if [[ ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
                     if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[8]} -eq 0 && ${MASTER_INSTALLED_STATE[8]} -eq 0 ]]; then MASTER_SELECTIONS[8]=1; ensure_active_index 8; auto_selected+="CUDA Toolkit, "; fi
@@ -1171,7 +1179,7 @@ main() {
             for master_index in "${ACTIVE_INDICES[@]}"; do 
                 if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 0 ]]; then 
                     MASTER_SELECTIONS[$master_index]=1
-                    if [[ $master_index -eq 12 && -z "$LLM_BACKEND_CHOICE" ]]; then LLM_BACKEND_CHOICE="ollama"; fi
+                    if [[ $master_index -eq 11 && -z "$LLM_BACKEND_CHOICE" ]]; then LLM_BACKEND_CHOICE="ollama"; fi
                 fi
             done
         elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
