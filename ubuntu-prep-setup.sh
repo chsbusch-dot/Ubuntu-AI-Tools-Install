@@ -686,7 +686,7 @@ install_local_llm() {
             cd llama.cpp
             $export_cmd
             cmake -B build $cmake_flags
-            cmake --build build --config Release
+            cmake --build build --config Release -j $(nproc)
         "
         print_success "llama.cpp built successfully."
         
