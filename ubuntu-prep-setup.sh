@@ -22,6 +22,9 @@ IS_DIFFERENT_USER=false
 HAS_NVIDIA_GPU=false
 GPU_STATUS=""
 LLM_BACKEND_CHOICE=""
+INSTALL_OPENWEBUI="n"
+TEST_LLAMACPP="n"
+OLLAMA_PULL_MODEL=""
 
 # --- Helper Functions ---
 
@@ -209,7 +212,7 @@ EOF
     fi
 }
 
-# 0a. Install Oh My Zsh and related tools
+# 1. Install Oh My Zsh & Dev Tools (git, tmux, micro)
 install_zsh() {
     print_header "Installing Zsh, Oh My Zsh, and Plugins"
     print_info "Installing packages: zsh, tmux, micro"
@@ -268,7 +271,7 @@ EOP
     POST_INSTALL_ACTIONS+=("zsh")
 }
 
-# 0. Update system
+# 0. Update System Packages (apt update && upgrade)
 update_system() {
     print_header "Updating System Packages"
     sudo apt-get update
@@ -277,14 +280,14 @@ update_system() {
     sleep 2 # Pause briefly so the user can see that it executed
 }
 
-# 1. Install Python
+# 2. Install Python Environment
 install_python() {
     print_header "Installing Python and Virtual Environment Tools"
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python-is-python3 python3-pip python3-dev python3-venv libssl-dev libffi-dev python3-setuptools
     print_success "Python environment installed."
 }
 
-# 2. Install Docker
+# 3. Install Docker and Docker Compose
 install_docker() {
     print_header "Installing Docker"
     print_info "Removing any old Docker installations..."
@@ -313,7 +316,7 @@ install_docker() {
     POST_INSTALL_ACTIONS+=("docker")
 }
 
-# 3, 4, 5. Install NVM, Node, and NPM
+# 4. Install NVM, Node.js & NPM
 install_nvm_node() {
     print_header "Installing NVM, Node.js (LTS), and NPM"
     print_info "Running the NVM installation script silently..."
@@ -352,7 +355,7 @@ EOF
     POST_INSTALL_ACTIONS+=("nvm")
 }
 
-# 5. Install NVIDIA vGPU Driver
+# 7. Install NVIDIA vGPU Driver
 install_vgpu_driver_from_link() {
     print_header "Installing NVIDIA vGPU Driver from Direct Link"
     read -p "Do you want to install the vGPU guest driver from a direct link? [y/N]: " confirm_vgpu
@@ -442,14 +445,21 @@ install_vgpu_driver_from_link() {
     rm -rf -- "$tmp_dir"
 }
 
-# 5a. Install System and GPU Monitors
-install_monitors() {
-    print_header "Installing System & GPU Monitors (btop, nvtop)"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y btop nvtop
-    print_success "btop and nvtop installed successfully."
+# 8. Install btop (System Monitor)
+install_btop() {
+    print_header "Installing btop (System Monitor)"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y btop
+    print_success "btop installed successfully."
 }
 
-# 6. Install CUDA Toolkit
+# 9. Install nvtop (GPU Monitor)
+install_nvtop() {
+    print_header "Installing nvtop (GPU Monitor)"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nvtop
+    print_success "nvtop installed successfully."
+}
+
+# 10. Install CUDA Toolkit
 install_cuda_toolkit() {
     print_info "Installing CUDA Toolkit..."
     # Make CUDA repo installation dynamic based on Ubuntu version
@@ -487,7 +497,7 @@ EOF
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
 
-# 7. Install NVIDIA Container Toolkit
+# 11. Install NVIDIA Container Toolkit
 install_container_toolkit() {
     print_info "Installing NVIDIA Container Toolkit..."
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -506,7 +516,7 @@ install_container_toolkit() {
         echo "⚠️ Docker NVIDIA test failed. A reboot is likely required to load the NVIDIA drivers."
 }
 
-# 8. Install cuDNN
+# 12. Install cuDNN
 install_cudnn() {
     print_info "Installing cuDNN..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zlib1g
@@ -515,30 +525,135 @@ install_cudnn() {
     POST_INSTALL_ACTIONS+=("reboot")
 }
 
-# 9. Install Google Gemini CLI
-install_gemini_cli_only() {
-    print_header "Installing Google Gemini CLI"
+# 13. Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)
+install_local_llm() {
+    print_header "Installing Local LLM Stack"
+    
+    local install_llamacpp_cpu="n"
+    local install_llamacpp_cuda="n"
+    local install_ollama="n"
 
-    local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+    case "$LLM_BACKEND_CHOICE" in
+        "ollama") install_ollama="y" ;;
+        "llama_cpu") install_llamacpp_cpu="y" ;;
+        "llama_cuda") install_llamacpp_cuda="y" ;;
+        *) install_ollama="y" ;; # Default fallback
+    esac
 
-    # Check if nvm is installed for the target user.
-    if ! sudo -u "$TARGET_USER" bash -c "$nvm_cmd; command -v nvm" &> /dev/null; then
-        echo "❌ NVM is not installed for user '$TARGET_USER'. Please run the 'Install NVM' option first."
-        return 1
+    if [[ "$install_llamacpp_cpu" == "y" || "$install_llamacpp_cuda" == "y" ]]; then
+        print_info "Installing build dependencies for llama.cpp..."
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential git cmake
+        
+        local cmake_flags="-DGGML_NATIVE=OFF"
+        local export_cmd=""
+
+        if [[ "$install_llamacpp_cuda" == "y" ]]; then
+            echo -e "\n\e[1;33m1. Lookup the Compute Capability of your NVIDIA devices:\e[0m"
+            echo "   CUDA: Lookup Your GPU Compute > https://developer.nvidia.com/cuda-gpus and enter as digits without separator (8.6 -> 86)"
+            read -p "Enter compute capability as integer [86]: " compute_cap
+            compute_cap=${compute_cap:-86}
+            cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
+            export_cmd="export CUDA_HOME=\"/usr/local/cuda\"; export PATH=\"\$CUDA_HOME/bin:\$PATH\"; export LD_LIBRARY_PATH=\"\$CUDA_HOME/lib64:\$CUDA_HOME/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
+            print_info "Cloning and building llama.cpp with CUDA support..."
+        else
+            print_info "Cloning and building llama.cpp with CPU support..."
+        fi
+
+        sudo -u "$TARGET_USER" bash -c "
+            cd \"$TARGET_USER_HOME\"
+            if [ ! -d llama.cpp ]; then
+                git clone https://github.com/ggerganov/llama.cpp
+            fi
+            cd llama.cpp
+            $export_cmd
+            cmake -B build $cmake_flags
+            cmake --build build --config Release -j $(nproc)
+        "
+        print_success "llama.cpp built successfully."
+        
+        print_info "Installing llama.cpp globally for all users..."
+        sudo bash -c "cd \"$TARGET_USER_HOME/llama.cpp\" && cmake --install build --prefix /usr/local"
+        print_success "llama.cpp installed globally to /usr/local/bin."
+
+        echo ""
+        if [[ "$TEST_LLAMACPP" == "y" || "$TEST_LLAMACPP" == "Y" ]]; then
+            print_info "Downloading and running TinyStories model..."
+            sudo -u "$TARGET_USER" bash -c "llama-cli --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128"
+        fi
+
+        echo ""
+        if [[ "$install_llamacpp_cuda" == "y" ]]; then
+            print_info "To run the server, use a command like this (hiding the first compute device if needed):"
+            echo 'CUDA_VISIBLE_DEVICES="-0" llama-server --model /srv/models/llama.gguf --port 8081'
+        else
+            print_info "To run the server, use a command like this:"
+            echo 'llama-server --model /srv/models/llama.gguf --port 8081'
+        fi
     fi
 
-    print_info "Updating npm to the latest version (globally for the current Node version)..."
-    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && $nvm_cmd; npm install -g npm@latest"
+    if [[ "$install_ollama" == "y" || "$install_ollama" == "Y" ]]; then
+        print_info "Installing Ollama..."
+        curl -fsSL https://ollama.com/install.sh | sh
 
-    print_info "Installing Google Gemini CLI..."
-    print_info "(Note: npm may show deprecation warnings for sub-dependencies, which are generally safe to ignore)"
-    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && $nvm_cmd; npm install -g @google/gemini-cli@latest"
-    
-    print_success "Google Gemini CLI installed."
-    POST_INSTALL_ACTIONS+=("nvm") # Depends on nvm path
+        read -p "Do you want to allow external access to Ollama (bind to 0.0.0.0)? [y/N]: " allow_ext
+        if [[ "$allow_ext" == "y" || "$allow_ext" == "Y" ]]; then
+            print_info "Configuring Ollama for external access..."
+            sudo mkdir -p /etc/systemd/system/ollama.service.d
+            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
+            sudo systemctl daemon-reload
+            sudo systemctl restart ollama
+            print_success "Ollama configured for external access."
+        fi
+
+        print_info "Verifying Ollama service listening ports..."
+        ss -antp | grep :11434 || true
+        print_info "Testing Ollama local API..."
+        curl http://localhost:11434 -v || true
+
+        print_info "Locally installed Ollama models:"
+        ollama list || echo "No models installed yet."
+        echo ""
+        if [[ -n "$OLLAMA_PULL_MODEL" ]]; then
+            print_info "Pulling $OLLAMA_PULL_MODEL..."
+            ollama pull "$OLLAMA_PULL_MODEL"
+            print_success "$OLLAMA_PULL_MODEL pulled successfully."
+        fi
+    fi
+
+    if [[ "$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" ]]; then
+        print_info "Installing Open-WebUI via Docker..."
+        if ! command -v docker &> /dev/null; then
+            echo "❌ Docker is not installed. Skipping Open-WebUI."
+        elif [[ "$HAS_NVIDIA_GPU" == true ]] && ! command -v nvidia-ctk &> /dev/null; then
+            echo "❌ NVIDIA Container Toolkit is not installed. Open-WebUI with GPU requires it. Skipping."
+        else
+            print_info "Ensuring Docker is enabled..."
+            sudo systemctl is-enabled docker &>/dev/null || sudo systemctl enable --now docker
+            
+            print_info "Pulling Open-WebUI image..."
+            sudo docker pull ghcr.io/open-webui/open-webui:main
+
+            if sudo docker ps -aq -f name=^open-webui$ | grep -q .; then
+                print_info "Stopping and removing existing Open-WebUI container..."
+                sudo docker stop open-webui &>/dev/null || true
+                sudo docker rm open-webui &>/dev/null || true
+            fi
+
+            print_info "Starting Open-WebUI container..."
+            local docker_cmd=(sudo docker run -d --network host --restart always)
+            if [[ "$HAS_NVIDIA_GPU" == true ]]; then
+                docker_cmd+=(--gpus all)
+            fi
+            docker_cmd+=(-e OLLAMA_BASE_URL=http://127.0.0.1:11434 -v open-webui:/app/backend/data --name open-webui ghcr.io/open-webui/open-webui:main)
+            
+            "${docker_cmd[@]}"
+            print_success "Open-WebUI installed and running on network host."
+        fi
+    fi
 }
 
-# 11. Install OpenClaw
+# 14. Install OpenClaw
 install_openclaw() {
     print_header "Installing OpenClaw"
 
@@ -655,174 +770,6 @@ EOF
     POST_INSTALL_ACTIONS+=("nvm" "ufw") # Modifies path, needs same action as nvm
 }
 
-# 12. Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)
-install_local_llm() {
-    print_header "Installing Local LLM Stack"
-    
-    local install_llamacpp_cpu="n"
-    local install_llamacpp_cuda="n"
-    local install_ollama="n"
-
-    case "$LLM_BACKEND_CHOICE" in
-        "ollama") install_ollama="y" ;;
-        "llama_cpu") install_llamacpp_cpu="y" ;;
-        "llama_cuda") install_llamacpp_cuda="y" ;;
-        *) install_ollama="y" ;; # Default fallback
-    esac
-
-    read -p "Install Open-WebUI (requires Docker & NVIDIA CTK)? [y/N]: " install_openwebui
-
-    if [[ "$install_llamacpp_cpu" == "y" || "$install_llamacpp_cuda" == "y" ]]; then
-        print_info "Installing build dependencies for llama.cpp..."
-        sudo apt-get update -qq
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential git cmake
-        
-        local cmake_flags="-DGGML_NATIVE=OFF"
-        local export_cmd=""
-
-        if [[ "$install_llamacpp_cuda" == "y" ]]; then
-            echo -e "\n\e[1;33m1. Lookup the Compute Capability of your NVIDIA devices:\e[0m"
-            echo "   CUDA: Lookup Your GPU Compute > https://developer.nvidia.com/cuda-gpus and enter as digits without separator (8.6 -> 86)"
-            read -p "Enter compute capability as integer [86]: " compute_cap
-            compute_cap=${compute_cap:-86}
-            cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
-            export_cmd="export CUDA_HOME=\"/usr/local/cuda\"; export PATH=\"\$CUDA_HOME/bin:\$PATH\"; export LD_LIBRARY_PATH=\"\$CUDA_HOME/lib64:\$CUDA_HOME/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
-            print_info "Cloning and building llama.cpp with CUDA support..."
-        else
-            print_info "Cloning and building llama.cpp with CPU support..."
-        fi
-
-        sudo -u "$TARGET_USER" bash -c "
-            cd \"$TARGET_USER_HOME\"
-            if [ ! -d llama.cpp ]; then
-                git clone https://github.com/ggerganov/llama.cpp
-            fi
-            cd llama.cpp
-            $export_cmd
-            cmake -B build $cmake_flags
-            cmake --build build --config Release -j $(nproc)
-        "
-        print_success "llama.cpp built successfully."
-        
-        print_info "Installing llama.cpp globally for all users..."
-        sudo bash -c "cd \"$TARGET_USER_HOME/llama.cpp\" && cmake --install build --prefix /usr/local"
-        print_success "llama.cpp installed globally to /usr/local/bin."
-
-        echo ""
-        read -p "Do you want to test llama.cpp with a small model (TinyStories)? [y/N]: " test_llama
-        if [[ "$test_llama" == "y" || "$test_llama" == "Y" ]]; then
-            print_info "Downloading and running TinyStories model..."
-            sudo -u "$TARGET_USER" bash -c "llama-cli --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128"
-        fi
-
-        echo ""
-        if [[ "$install_llamacpp_cuda" == "y" ]]; then
-            print_info "To run the server, use a command like this (hiding the first compute device if needed):"
-            echo 'CUDA_VISIBLE_DEVICES="-0" llama-server --model /srv/models/llama.gguf --port 8081'
-        else
-            print_info "To run the server, use a command like this:"
-            echo 'llama-server --model /srv/models/llama.gguf --port 8081'
-        fi
-    fi
-
-    if [[ "$install_ollama" == "y" || "$install_ollama" == "Y" ]]; then
-        print_info "Installing Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-
-        read -p "Do you want to allow external access to Ollama (bind to 0.0.0.0)? [y/N]: " allow_ext
-        if [[ "$allow_ext" == "y" || "$allow_ext" == "Y" ]]; then
-            print_info "Configuring Ollama for external access..."
-            sudo mkdir -p /etc/systemd/system/ollama.service.d
-            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
-            sudo systemctl daemon-reload
-            sudo systemctl restart ollama
-            print_success "Ollama configured for external access."
-        fi
-
-        print_info "Verifying Ollama service listening ports..."
-        ss -antp | grep :11434 || true
-        print_info "Testing Ollama local API..."
-        curl http://localhost:11434 -v || true
-
-        print_info "Locally installed Ollama models:"
-        ollama list || echo "No models installed yet."
-        echo ""
-        read -p "Enter a model name to pull (e.g., 'llama3', 'mistral', or press Enter to skip): " ollama_model
-        if [[ -n "$ollama_model" ]]; then
-            print_info "Pulling $ollama_model..."
-            ollama pull "$ollama_model"
-            print_success "$ollama_model pulled successfully."
-        fi
-    fi
-
-    if [[ "$install_openwebui" == "y" || "$install_openwebui" == "Y" ]]; then
-        print_info "Installing Open-WebUI via Docker..."
-        if ! command -v docker &> /dev/null; then
-            echo "❌ Docker is not installed. Skipping Open-WebUI."
-        elif [[ "$HAS_NVIDIA_GPU" == true ]] && ! command -v nvidia-ctk &> /dev/null; then
-            echo "❌ NVIDIA Container Toolkit is not installed. Open-WebUI with GPU requires it. Skipping."
-        else
-            print_info "Ensuring Docker is enabled..."
-            sudo systemctl is-enabled docker &>/dev/null || sudo systemctl enable --now docker
-            
-            print_info "Pulling Open-WebUI image..."
-            sudo docker pull ghcr.io/open-webui/open-webui:main
-
-            if sudo docker ps -aq -f name=^open-webui$ | grep -q .; then
-                print_info "Stopping and removing existing Open-WebUI container..."
-                sudo docker stop open-webui &>/dev/null || true
-                sudo docker rm open-webui &>/dev/null || true
-            fi
-
-            print_info "Starting Open-WebUI container..."
-            local docker_cmd=(sudo docker run -d --network host --restart always)
-            if [[ "$HAS_NVIDIA_GPU" == true ]]; then
-                docker_cmd+=(--gpus all)
-            fi
-            docker_cmd+=(-e OLLAMA_BASE_URL=http://127.0.0.1:11434 -v open-webui:/app/backend/data --name open-webui ghcr.io/open-webui/open-webui:main)
-            
-            "${docker_cmd[@]}"
-            print_success "Open-WebUI installed and running on network host."
-        fi
-    fi
-}
-
-# 11. Install Homebrew
-install_homebrew() {
-    print_header "Installing Homebrew"
-    # Note: build-essential is installed as part of base_dependencies
-
-    # Homebrew installs under /home/linuxbrew/.linuxbrew, which is shared, but we check as the target user.
-    if ! sudo -u "$TARGET_USER" -i bash -c 'command -v brew' &> /dev/null; then
-        print_info "Installing Homebrew non-interactively..."
-        # Pre-create the entire directory structure with correct ownership.
-        # This entirely bypasses the Homebrew installer's internal sudo checks for standard users.
-        sudo mkdir -p /home/linuxbrew/.linuxbrew/{bin,etc,include,lib,sbin,share,var,opt,share/zsh,share/zsh/site-functions,var/homebrew,var/homebrew/linked,Cellar,Caskroom,Frameworks}
-        sudo chown -R "$TARGET_USER":"$TARGET_USER" /home/linuxbrew
-        # The official non-interactive method. This will also install dependencies.
-        sudo -u "$TARGET_USER" -i bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-    else
-        print_info "Homebrew executable found for user '$TARGET_USER'."
-    fi
-
-    # The installer should add the path to .profile, but we'll ensure it's in zshrc/bashrc for non-login shells.
-    print_info "Verifying Homebrew shell environment in shell configuration..."
-    local brew_shellenv_str='eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -Fq "$brew_shellenv_str" "$TARGET_USER_HOME/.zshrc"; then
-        print_info "Adding Homebrew shellenv to ~/.zshrc"
-        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
-    fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -Fq "$brew_shellenv_str" "$TARGET_USER_HOME/.bashrc"; then
-        print_info "Adding Homebrew shellenv to ~/.bashrc"
-        echo -e "\n# Add Homebrew to PATH\n${brew_shellenv_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
-    fi
-
-    # No need to source for the current script session, as all brew commands would need to be run via `sudo -u` anyway.
-
-    print_success "Homebrew installation process finished."
-    POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
-}
-
 # --- Installation Checks ---
 check_installations() {
     print_header "Checking for Existing Installations"
@@ -871,44 +818,50 @@ check_installations() {
         MASTER_INSTALLED_STATE[7]=1
     fi
 
-    # 8. btop & nvtop (index 8)
-    if command -v btop &> /dev/null && command -v nvtop &> /dev/null; then
-        print_info "Found existing btop and nvtop installations."
+    # 8. btop (index 8)
+    if command -v btop &> /dev/null; then
+        print_info "Found existing btop installation."
         MASTER_INSTALLED_STATE[8]=1
     fi
 
-    # 9. CUDA Toolkit (index 9)
-    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
-        print_info "Found existing CUDA Toolkit."
+    # 9. nvtop (index 9)
+    if command -v nvtop &> /dev/null; then
+        print_info "Found existing nvtop installation."
         MASTER_INSTALLED_STATE[9]=1
     fi
 
-    # 10. NVIDIA Container Toolkit (index 10)
-    if dpkg -l | grep -q 'nvidia-container-toolkit'; then
-        print_info "Found existing NVIDIA Container Toolkit."
+    # 10. CUDA Toolkit (index 10)
+    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+        print_info "Found existing CUDA Toolkit."
         MASTER_INSTALLED_STATE[10]=1
     fi
 
-    # 11. cuDNN (index 11)
-    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
-        print_info "Found existing cuDNN installation."
+    # 11. NVIDIA Container Toolkit (index 11)
+    if dpkg -l | grep -q 'nvidia-container-toolkit'; then
+        print_info "Found existing NVIDIA Container Toolkit."
         MASTER_INSTALLED_STATE[11]=1
     fi
 
-    # 12. Local LLM Stack (index 12)
+    # 12. cuDNN (index 12)
+    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
+        print_info "Found existing cuDNN installation."
+        MASTER_INSTALLED_STATE[12]=1
+    fi
+
+    # 13. Local LLM Stack (index 13)
     local llm_installed=1
     if ! command -v llama-server &> /dev/null; then llm_installed=0; fi
     if ! command -v ollama &> /dev/null; then llm_installed=0; fi
     if ! sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^open-webui$'; then llm_installed=0; fi
     if [[ $llm_installed -eq 1 ]]; then
         print_info "Found existing Local LLM Stack (Ollama, llama.cpp, Open-WebUI)."
-        MASTER_INSTALLED_STATE[12]=1
+        MASTER_INSTALLED_STATE[13]=1
     fi
 
-    # 13. OpenClaw (index 13)
+    # 14. OpenClaw (index 14)
     if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
         print_info "Found existing OpenClaw installation."
-        MASTER_INSTALLED_STATE[13]=1
+        MASTER_INSTALLED_STATE[14]=1
     fi
 }
 
@@ -1004,14 +957,15 @@ show_menu() {
     local menu_body=""
 
     for master_index in "${ACTIVE_INDICES[@]}"; do
-        # Hide NVIDIA options (indices 7 to 11) if no GPU is detected
-        if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $master_index -ge 7 && $master_index -le 11 ]]; then
+        # Hide NVIDIA options (indices 7, 9 to 12) if no GPU is detected
+        if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $master_index -eq 7 || ($master_index -ge 9 && $master_index -le 12) ]]; then
             continue
         fi
 
         # Visual grouping
         if [[ $master_index -eq 7 && "$HAS_NVIDIA_GPU" == true ]]; then menu_body+="\n"; fi
-        if [[ $master_index -eq 12 || $master_index -eq 13 ]]; then menu_body+="\n"; fi
+        if [[ $master_index -eq 8 && "$HAS_NVIDIA_GPU" == false ]]; then menu_body+="\n"; fi
+        if [[ $master_index -eq 13 || $master_index -eq 14 ]]; then menu_body+="\n"; fi
 
         local line=""
         if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
@@ -1054,7 +1008,8 @@ main() {
         "Install Homebrew"
         "Install Google Gemini CLI"
         "Install NVIDIA vGPU Driver"
-        "Install btop & nvtop (System/GPU Monitors)"
+        "Install btop (System Monitor)"
+        "Install nvtop (GPU Monitor)"
         "Install CUDA Toolkit"
         "Install NVIDIA Container Toolkit"
         "Install cuDNN"
@@ -1071,7 +1026,8 @@ main() {
         install_homebrew
         install_gemini_cli_only
         install_vgpu_driver_from_link
-        install_monitors
+        install_btop
+        install_nvtop
         install_cuda_toolkit
         install_container_toolkit
         install_cudnn
@@ -1079,8 +1035,8 @@ main() {
         install_openclaw
     )
 
-    local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
-    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
     local ACTIVE_INDICES=()
     local UI_TO_MASTER=()
 
@@ -1133,9 +1089,9 @@ main() {
         fi
     done
 
-    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 13); fi
-    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10 11); fi
-    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(12); fi
+    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 14); fi
+    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10 11 12); fi
+    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(13); fi
 
     IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
     unset IFS
@@ -1152,8 +1108,8 @@ main() {
             if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
-                # Sub-menu for Local LLM Stack (index 12)
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
+                # Sub-menu for Local LLM Stack (index 13)
+                if [[ $master_index -eq 13 && ${MASTER_SELECTIONS[13]} -eq 0 ]]; then
                     echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
                     echo "  1. Ollama"
                     echo "  2. llama.cpp with CPU"
@@ -1165,16 +1121,27 @@ main() {
                         3) LLM_BACKEND_CHOICE="llama_cuda" ;;
                         *) echo -e "\nInvalid choice. Cancelling option." && sleep 1; continue ;;
                     esac
+
+                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
+                        read -p "Do you want to test llama.cpp with a small model (TinyStories) after install? [y/N]: " TEST_LLAMACPP
+                    elif [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then
+                        read -p "Enter an Ollama model name to pull (e.g., 'llama3', 'mistral', or press Enter to skip): " OLLAMA_PULL_MODEL
+                    fi
+
+                    read -p "Install Open-WebUI (requires Docker)? [y/N]: " INSTALL_OPENWEBUI
                 fi
 
                 MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
 
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
+                if [[ $master_index -eq 13 && ${MASTER_SELECTIONS[13]} -eq 0 ]]; then
                     LLM_BACKEND_CHOICE=""
+                    INSTALL_OPENWEBUI="n"
+                    TEST_LLAMACPP="n"
+                    OLLAMA_PULL_MODEL=""
                 fi
 
-                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 13) require NVM (index 4)
-                if [[ ($master_index -eq 6 || $master_index -eq 13) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
+                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 14) require NVM (index 4)
+                if [[ ($master_index -eq 6 || $master_index -eq 14) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
                     if [[ ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                         MASTER_SELECTIONS[4]=1
                         ensure_active_index 4
@@ -1183,18 +1150,18 @@ main() {
                 elif [[ $master_index -eq 4 && ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                     local unselected_deps=0
                     if [[ ${MASTER_SELECTIONS[6]} -eq 1 ]]; then MASTER_SELECTIONS[6]=0; unselected_deps=1; fi
-                    if [[ ${MASTER_SELECTIONS[13]} -eq 1 ]]; then MASTER_SELECTIONS[13]=0; unselected_deps=1; fi
+                    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then MASTER_SELECTIONS[14]=0; unselected_deps=1; fi
                     if [[ $unselected_deps -eq 1 ]]; then
                         echo -e "\n[Auto-unselected] Gemini and/or OpenClaw were unselected because they require NVM." && sleep 2
                     fi
                 fi
 
-                # Dependency logic for Local LLM Stack (index 12)
-                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 1 ]]; then
+                # Dependency logic for Local LLM Stack (index 13)
+                if [[ $master_index -eq 13 && ${MASTER_SELECTIONS[13]} -eq 1 ]]; then
                     local auto_selected=""
-                    if [[ ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
-                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[9]} -eq 0 && ${MASTER_INSTALLED_STATE[9]} -eq 0 ]]; then MASTER_SELECTIONS[9]=1; ensure_active_index 9; auto_selected+="CUDA Toolkit, "; fi
-                    if [[ "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="NVIDIA CTK, "; fi
+                    if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
+                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="CUDA Toolkit, "; fi
+                    if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" || "$LLM_BACKEND_CHOICE" == "llama_cuda") && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[11]} -eq 0 && ${MASTER_INSTALLED_STATE[11]} -eq 0 ]]; then MASTER_SELECTIONS[11]=1; ensure_active_index 11; auto_selected+="NVIDIA CTK, "; fi
                     if [[ -n "$auto_selected" ]]; then
                         echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
                     fi
@@ -1239,11 +1206,96 @@ main() {
 
         print_success "Selected installations are complete."
         print_final_summary
+
+        # --- Expose Services Menu ---
+        local EXPOSE_OPTIONS=()
+        local EXPOSE_KEYS=()
+        local EXPOSE_SELECTIONS=()
+
+        if [ -f "$TARGET_USER_HOME/.openclaw/openclaw.json" ]; then
+            EXPOSE_OPTIONS+=("OpenClaw Gateway (Port 18789)")
+            EXPOSE_KEYS+=("openclaw")
+            EXPOSE_SELECTIONS+=(0)
+        fi
+        if command -v ollama &> /dev/null; then
+            EXPOSE_OPTIONS+=("Ollama API (Port 11434)")
+            EXPOSE_KEYS+=("ollama")
+            EXPOSE_SELECTIONS+=(0)
+        fi
+        if command -v llama-server &> /dev/null; then
+            EXPOSE_OPTIONS+=("Llama.cpp Server (Port 8080)")
+            EXPOSE_KEYS+=("llamacpp")
+            EXPOSE_SELECTIONS+=(0)
+        fi
+
+        local exposed_msg=""
+        if [ ${#EXPOSE_OPTIONS[@]} -gt 0 ]; then
+            while true; do
+                clear
+                echo -e "\n\e[1;36mSelect Services to Expose to the Network (Bind to 0.0.0.0):\e[0m"
+                for i in "${!EXPOSE_OPTIONS[@]}"; do
+                    if [[ ${EXPOSE_SELECTIONS[$i]} -eq 1 ]]; then
+                        echo -e " \e[1;32m[x]\e[0m $((i+1)). ${EXPOSE_OPTIONS[$i]}"
+                    else
+                        echo -e " [ ] $((i+1)). ${EXPOSE_OPTIONS[$i]}"
+                    fi
+                done
+                echo "---------------------------------"
+                echo "Use numbers [1-${#EXPOSE_OPTIONS[@]}] to toggle. Press 'a' to select all."
+                echo "Press 'c' to confirm and continue."
+                read -p "Your choice: " exp_choice
+                
+                if [[ "$exp_choice" =~ ^[0-9]+$ ]] && [ "$exp_choice" -ge 1 ] && [ "$exp_choice" -le ${#EXPOSE_OPTIONS[@]} ]; then
+                    local idx=$((exp_choice - 1))
+                    EXPOSE_SELECTIONS[$idx]=$((1 - EXPOSE_SELECTIONS[$idx]))
+                elif [[ "$exp_choice" == "a" || "$exp_choice" == "A" ]]; then
+                    for i in "${!EXPOSE_SELECTIONS[@]}"; do EXPOSE_SELECTIONS[$i]=1; done
+                elif [[ "$exp_choice" == "c" || "$exp_choice" == "C" ]]; then
+                    break
+                else
+                    echo -e "\nInvalid option." && sleep 1
+                fi
+            done
+
+            local applied_exposures=0
+            for i in "${!EXPOSE_KEYS[@]}"; do
+                if [[ ${EXPOSE_SELECTIONS[$i]} -eq 1 ]]; then
+                    if [[ $applied_exposures -eq 0 ]]; then print_info "Applying exposure settings..."; fi
+                    applied_exposures=1
+                    
+                    case "${EXPOSE_KEYS[$i]}" in
+                        "openclaw")
+                            local oc_conf="$TARGET_USER_HOME/.openclaw/openclaw.json"
+                            local tmp_json=$(mktemp)
+                            sudo jq '.gateway.bind = "0.0.0.0"' "$oc_conf" > "$tmp_json" && \
+                            sudo mv "$tmp_json" "$oc_conf" && sudo chown "$TARGET_USER":"$TARGET_USER" "$oc_conf"
+                            sudo ufw allow 18789/tcp &>/dev/null || true
+                            exposed_msg+="  - OpenClaw Gateway is at IP:18789\n"
+                            ;;
+                        "ollama")
+                            sudo mkdir -p /etc/systemd/system/ollama.service.d
+                            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
+                            sudo systemctl daemon-reload
+                            sudo systemctl restart ollama
+                            sudo ufw allow 11434/tcp &>/dev/null || true
+                            exposed_msg+="  - Ollama is at IP:11434 (or 8081 if configured)\n"
+                            ;;
+                        "llamacpp")
+                            sudo ufw allow 8080/tcp &>/dev/null || true
+                            exposed_msg+="  - llama.cpp is at IP:8080\n"
+                            ;;
+                    esac
+                fi
+            done
+            if [[ $applied_exposures -eq 1 ]]; then print_success "Exposure settings applied."; fi
+        fi
         
-        if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* ]]; then
-            echo -e "\n\e[1;33mIMPORTANT: Firewall rules for OpenClaw have been configured, but UFW is NOT enabled by default.\e[0m"
+        if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* || -n "$exposed_msg" ]]; then
+            echo -e "\n\e[1;33mIMPORTANT: Firewall rules have been configured, but UFW is NOT enabled by default.\e[0m"
             read -p "Do you want to enable the UFW firewall now? (WARNING: Ensure SSH access is allowed if remote) [y/N]: " enable_ufw
             if [[ "$enable_ufw" == "y" || "$enable_ufw" == "Y" ]]; then
+                sudo ufw default deny incoming &>/dev/null || true
+                sudo ufw allow 22/tcp &>/dev/null || true
                 sudo ufw --force enable
                 print_success "UFW firewall enabled."
             else
@@ -1253,6 +1305,10 @@ main() {
 
         echo -e "\n\e[1;32m================================================================\e[0m"
         echo -e "\e[1;32mINSTALLATION COMPLETE!\e[0m"
+        if [[ -n "$exposed_msg" ]]; then
+            echo -e "\n\e[1;36mNetwork Services Exposed:\e[0m"
+            echo -e "$exposed_msg"
+        fi
         if [[ "$IS_DIFFERENT_USER" == true ]]; then
             echo -e "\e[1;33mPlease switch to your new user (\e[1;36m$TARGET_USER\e[1;33m) and run the following command to activate your environment:\e[0m"
             echo -e "\e[1;36msu - $TARGET_USER\e[0m"
