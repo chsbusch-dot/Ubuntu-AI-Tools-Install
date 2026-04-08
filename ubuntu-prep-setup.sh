@@ -522,9 +522,15 @@ install_openclaw() {
     print_info "Starting user systemd instance..."
     sudo systemctl start "user@$(id -u "$TARGET_USER").service"
 
+    if [ -d "/home/linuxbrew/.linuxbrew" ]; then
+        print_info "Ensuring Homebrew directories are writable by '$TARGET_USER'..."
+        sudo chown -R "$TARGET_USER":"$TARGET_USER" /home/linuxbrew
+    fi
+
     print_info "Installing OpenClaw and onboarding daemon..."
-    # Run as the target user via su to ensure a full login environment.
-    su - "$TARGET_USER" -c '
+    # Run as the target user via sudo -i to ensure a full login environment
+    # without prompting for the target user password.
+    sudo -i -u "$TARGET_USER" bash -c '
         export NVM_DIR="$HOME/.nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
         
