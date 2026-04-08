@@ -47,6 +47,16 @@ check_not_root() {
     fi
 }
 
+# Function to check if the current user has sudo privileges
+check_sudo_privileges() {
+    print_info "Verifying sudo privileges..."
+    if ! sudo -v; then
+        echo "❌ The current user does not have sudo privileges. Please run this script as a user with sudo access."
+        exit 1
+    fi
+    print_success "Sudo privileges verified."
+}
+
 # Function to check if the OS is Ubuntu
 check_os() {
     print_info "Verifying operating system..."
@@ -455,6 +465,9 @@ install_cuda_toolkit() {
         echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}\n${cuda_lib_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
     
+    export PATH="/usr/local/cuda/bin:$PATH"
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
     print_success "CUDA Toolkit installed."
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
 }
@@ -474,7 +487,7 @@ install_container_toolkit() {
     sudo systemctl restart docker
 
     print_info "Testing NVIDIA Container Toolkit (this may download a container image)..."
-    sudo docker run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi || \
+    sudo docker run --rm --gpus all ubuntu:22.04 nvidia-smi || \
         echo "⚠️ Docker NVIDIA test failed. A reboot is likely required to load the NVIDIA drivers."
 }
 
@@ -789,7 +802,7 @@ check_installations() {
     fi
 
     # 4. NVM/Node (index 4)
-    if sudo test -s "$TARGET_USER_HOME/.nvm/nvm.sh" && sudo bash -c "ls $TARGET_USER_HOME/.nvm/versions/node/*/bin/node" &> /dev/null; then
+    if sudo test -s "$TARGET_USER_HOME/.nvm/nvm.sh" && sudo find "$TARGET_USER_HOME/.nvm" -name "node" -type f -executable 2>/dev/null | grep -q .; then
         print_info "Found existing NVM and Node.js installation."
         installed_state[4]=1
     fi
@@ -801,7 +814,7 @@ check_installations() {
     fi
 
     # 6. Gemini CLI (index 6)
-    if sudo bash -c "ls $TARGET_USER_HOME/.nvm/versions/node/*/bin/gemini" &> /dev/null; then
+    if sudo find "$TARGET_USER_HOME/.nvm" -name "gemini" 2>/dev/null | grep -q .; then
         print_info "Found existing Gemini CLI installation."
         installed_state[6]=1
     fi
@@ -850,6 +863,9 @@ check_installations() {
 # --- Final Summary ---
 
 print_final_summary() {
+    # Ensure newly installed binaries are in the script's PATH for verification
+    [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH"
+
     # Make array unique by converting to a string, sorting, and converting back
     local unique_actions
     unique_actions=$(echo "${POST_INSTALL_ACTIONS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
@@ -862,9 +878,9 @@ print_final_summary() {
         echo ""
     fi
 
-    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+    if command -v nvcc &> /dev/null; then
         print_info "CUDA Toolkit:"
-        /usr/local/cuda/bin/nvcc --version
+        nvcc --version
         echo ""
     fi
 
@@ -983,6 +999,7 @@ show_menu() {
 
 main() {
     check_not_root
+    check_sudo_privileges
     check_os
     determine_target_user
     detect_gpu
