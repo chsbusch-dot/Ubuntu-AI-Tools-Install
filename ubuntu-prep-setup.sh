@@ -527,31 +527,51 @@ install_openclaw() {
         sudo chown -R "$TARGET_USER":"$TARGET_USER" /home/linuxbrew
     fi
 
-    print_info "Installing OpenClaw and onboarding daemon..."
-    # Run as the target user via sudo -i to ensure a full login environment
-    # without prompting for the target user password.
-    sudo -i -u "$TARGET_USER" bash -c '
+    local openclaw_command
+    openclaw_command=$(cat <<'EOF'
         export NVM_DIR="$HOME/.nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
-        
+
         # Source secrets so OpenClaw automatically uses configured API keys
         [ -f "$HOME/.env.secrets" ] && source "$HOME/.env.secrets"
-        
+
         # Load Homebrew if it exists so OpenClaw can use it to install skills
         [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ] && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        
+
         # Load CUDA paths if they exist
         [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH"
         [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
-        
+
         curl -fsSL https://openclaw.ai/install.sh | bash
-        
+
         export PATH="$HOME/.local/bin:$PATH"
         export XDG_RUNTIME_DIR="/run/user/$(id -u)"
         export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-        
+
         openclaw onboard --install-daemon
-    '
+EOF
+)
+
+    print_info "Switching to '$TARGET_USER' to install and onboard OpenClaw."
+    echo -e "\e[1;33mYou will be prompted for the password for user '$TARGET_USER'.\e[0m"
+    while true; do
+        # Temporarily disable exit-on-error for the su command
+        set +e
+        su - "$TARGET_USER" -c "$openclaw_command"
+        local su_exit_code=$?
+        set -e # Re-enable exit-on-error
+
+        if [ $su_exit_code -eq 0 ]; then
+            break # Exit the loop on success
+        else
+            read -p "Authentication failed. Do you want to try again? [Y/n]: " retry_choice
+            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
+                echo "❌ Aborting OpenClaw installation."
+                # The temporary sudoers file will be removed by the cleanup step after this function returns.
+                return 1 # Exit the function with an error status
+            fi
+        fi
+    done
 
     print_info "Revoking temporary sudo privileges..."
     sudo rm -f "/etc/sudoers.d/99-temp-$TARGET_USER"
