@@ -197,8 +197,9 @@ install_zsh() {
 
     if [ ! -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
         print_info "Installing Oh My Zsh..."
-        # The --unattended flag prevents the installer from trying to change the shell, so we do it manually.
-        sudo -u "$TARGET_USER" sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        # We must cd to the target user's home directory first. Otherwise, the installer starts in the current user's
+        # home directory and throws a permission error when it tries to cd back to its starting path at the end.
+        sudo -u "$TARGET_USER" -H bash -c "cd \"$TARGET_USER_HOME\" && sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended"
     else
         print_info "Oh My Zsh is already installed."
     fi
@@ -212,15 +213,15 @@ install_zsh() {
     print_info "Cloning Zsh plugins..."
     # zsh-autosuggestions
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
-        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
+        sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
     fi
     # zsh-syntax-highlighting
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
-        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+        sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
     fi
     # zsh-history-substring-search
     if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-history-substring-search" ]; then
-        sudo -u "$TARGET_USER" git clone https://github.com/zsh-users/zsh-history-substring-search "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"
+        sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-history-substring-search "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"
     fi
 
     print_info "Configuring .zshrc..."
