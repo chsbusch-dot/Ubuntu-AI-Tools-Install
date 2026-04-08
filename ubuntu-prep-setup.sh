@@ -438,16 +438,15 @@ install_vgpu_driver_from_link() {
         echo "❌ Downloaded file not found at ${downloaded_file_path}."
     fi
 
-    echo ""
-    read -p "Do you want to install system/GPU monitors (btop and nvtop)? [y/N]: " install_monitors
-    if [[ "$install_monitors" == "y" || "$install_monitors" == "Y" ]]; then
-        print_info "Installing btop and nvtop..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y btop nvtop
-        print_success "btop and nvtop installed."
-    fi
-
     trap - EXIT
     rm -rf -- "$tmp_dir"
+}
+
+# 5a. Install System and GPU Monitors
+install_monitors() {
+    print_header "Installing System & GPU Monitors (btop, nvtop)"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y btop nvtop
+    print_success "btop and nvtop installed successfully."
 }
 
 # 6. Install CUDA Toolkit
@@ -464,19 +463,25 @@ install_cuda_toolkit() {
     # The CUDA toolkit installs to /usr/local/cuda, which is not always in the PATH.
     # We will add it idempotently to the user's shell configuration.
     print_info "Verifying CUDA path in shell configuration..."
-    local cuda_path_str='export PATH="/usr/local/cuda/bin:$PATH"'
-    local cuda_lib_str='export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"'
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.zshrc"; then
+    local cuda_env_str
+    cuda_env_str=$(cat <<'EOF'
+export CUDA_HOME="/usr/local/cuda"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:$LD_LIBRARY_PATH"
+EOF
+)
+    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding CUDA path to ~/.zshrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}\n${cuda_lib_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -qE '^[[:space:]]*export[[:space:]]+PATH=.*"/usr/local/cuda/bin"' "$TARGET_USER_HOME/.bashrc"; then
+    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding CUDA path to ~/.bashrc"
-        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_path_str}\n${cuda_lib_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
+        echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
     
-    export PATH="/usr/local/cuda/bin:$PATH"
-    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export PATH="$CUDA_HOME/bin:$PATH"
+    export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:$LD_LIBRARY_PATH"
 
     print_success "CUDA Toolkit installed."
     POST_INSTALL_ACTIONS+=("nvm") # Re-use 'nvm' flag to trigger the "new terminal" message
@@ -589,8 +594,9 @@ EOF
         [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ] && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)";
 
         # Load CUDA paths if they exist
-        [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH";
-        [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH";
+        [ -d "/usr/local/cuda" ] && export CUDA_HOME="/usr/local/cuda";
+        [ -d "/usr/local/cuda/bin" ] && export PATH="$CUDA_HOME/bin:$PATH";
+        [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:$LD_LIBRARY_PATH";
 
         curl -fsSL https://openclaw.ai/install.sh | bash;
 
@@ -680,7 +686,7 @@ install_local_llm() {
             read -p "Enter compute capability as integer [86]: " compute_cap
             compute_cap=${compute_cap:-86}
             cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
-            export_cmd="export PATH=\"/usr/local/cuda/bin:\$PATH\"; export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:\$LD_LIBRARY_PATH\";"
+            export_cmd="export CUDA_HOME=\"/usr/local/cuda\"; export PATH=\"\$CUDA_HOME/bin:\$PATH\"; export LD_LIBRARY_PATH=\"\$CUDA_HOME/lib64:\$CUDA_HOME/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
             print_info "Cloning and building llama.cpp with CUDA support..."
         else
             print_info "Cloning and building llama.cpp with CPU support..."
@@ -698,13 +704,24 @@ install_local_llm() {
         "
         print_success "llama.cpp built successfully."
         
+        print_info "Installing llama.cpp globally for all users..."
+        sudo bash -c "cd \"$TARGET_USER_HOME/llama.cpp\" && cmake --install build --prefix /usr/local"
+        print_success "llama.cpp installed globally to /usr/local/bin."
+
+        echo ""
+        read -p "Do you want to test llama.cpp with a small model (TinyStories)? [y/N]: " test_llama
+        if [[ "$test_llama" == "y" || "$test_llama" == "Y" ]]; then
+            print_info "Downloading and running TinyStories model..."
+            sudo -u "$TARGET_USER" bash -c "llama-cli --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128"
+        fi
+
         echo ""
         if [[ "$install_llamacpp_cuda" == "y" ]]; then
             print_info "To run the server, use a command like this (hiding the first compute device if needed):"
-            echo 'CUDA_VISIBLE_DEVICES="-0" ./llama.cpp/build/bin/llama-server --model /srv/models/llama.gguf'
+            echo 'CUDA_VISIBLE_DEVICES="-0" llama-server --model /srv/models/llama.gguf --port 8081'
         else
             print_info "To run the server, use a command like this:"
-            echo './llama.cpp/build/bin/llama-server --model /srv/models/llama.gguf'
+            echo 'llama-server --model /srv/models/llama.gguf --port 8081'
         fi
     fi
 
@@ -854,38 +871,44 @@ check_installations() {
         MASTER_INSTALLED_STATE[7]=1
     fi
 
-    # 8. CUDA Toolkit (index 8)
-    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
-        print_info "Found existing CUDA Toolkit."
+    # 8. btop & nvtop (index 8)
+    if command -v btop &> /dev/null && command -v nvtop &> /dev/null; then
+        print_info "Found existing btop and nvtop installations."
         MASTER_INSTALLED_STATE[8]=1
     fi
 
-    # 9. NVIDIA Container Toolkit (index 9)
-    if dpkg -l | grep -q 'nvidia-container-toolkit'; then
-        print_info "Found existing NVIDIA Container Toolkit."
+    # 9. CUDA Toolkit (index 9)
+    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+        print_info "Found existing CUDA Toolkit."
         MASTER_INSTALLED_STATE[9]=1
     fi
 
-    # 10. cuDNN (index 10)
-    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
-        print_info "Found existing cuDNN installation."
+    # 10. NVIDIA Container Toolkit (index 10)
+    if dpkg -l | grep -q 'nvidia-container-toolkit'; then
+        print_info "Found existing NVIDIA Container Toolkit."
         MASTER_INSTALLED_STATE[10]=1
     fi
 
-    # 11. Local LLM Stack (index 11)
+    # 11. cuDNN (index 11)
+    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
+        print_info "Found existing cuDNN installation."
+        MASTER_INSTALLED_STATE[11]=1
+    fi
+
+    # 12. Local LLM Stack (index 12)
     local llm_installed=1
-    if [ ! -f "$TARGET_USER_HOME/llama.cpp/build/bin/llama-server" ]; then llm_installed=0; fi
+    if ! command -v llama-server &> /dev/null; then llm_installed=0; fi
     if ! command -v ollama &> /dev/null; then llm_installed=0; fi
     if ! sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^open-webui$'; then llm_installed=0; fi
     if [[ $llm_installed -eq 1 ]]; then
         print_info "Found existing Local LLM Stack (Ollama, llama.cpp, Open-WebUI)."
-        MASTER_INSTALLED_STATE[11]=1
+        MASTER_INSTALLED_STATE[12]=1
     fi
 
-    # 12. OpenClaw (index 12)
+    # 13. OpenClaw (index 13)
     if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
         print_info "Found existing OpenClaw installation."
-        MASTER_INSTALLED_STATE[12]=1
+        MASTER_INSTALLED_STATE[13]=1
     fi
 }
 
@@ -981,14 +1004,14 @@ show_menu() {
     local menu_body=""
 
     for master_index in "${ACTIVE_INDICES[@]}"; do
-        # Hide NVIDIA options (indices 7 to 10) if no GPU is detected
-        if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $master_index -ge 7 && $master_index -le 10 ]]; then
+        # Hide NVIDIA options (indices 7 to 11) if no GPU is detected
+        if [[ "$HAS_NVIDIA_GPU" == false ]] && [[ $master_index -ge 7 && $master_index -le 11 ]]; then
             continue
         fi
 
         # Visual grouping
         if [[ $master_index -eq 7 && "$HAS_NVIDIA_GPU" == true ]]; then menu_body+="\n"; fi
-        if [[ $master_index -eq 11 || $master_index -eq 12 ]]; then menu_body+="\n"; fi
+        if [[ $master_index -eq 12 || $master_index -eq 13 ]]; then menu_body+="\n"; fi
 
         local line=""
         if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
@@ -1031,6 +1054,7 @@ main() {
         "Install Homebrew"
         "Install Google Gemini CLI"
         "Install NVIDIA vGPU Driver"
+        "Install btop & nvtop (System/GPU Monitors)"
         "Install CUDA Toolkit"
         "Install NVIDIA Container Toolkit"
         "Install cuDNN"
@@ -1047,6 +1071,7 @@ main() {
         install_homebrew
         install_gemini_cli_only
         install_vgpu_driver_from_link
+        install_monitors
         install_cuda_toolkit
         install_container_toolkit
         install_cudnn
@@ -1054,8 +1079,8 @@ main() {
         install_openclaw
     )
 
-    local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0)
-    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MASTER_SELECTIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
     local ACTIVE_INDICES=()
     local UI_TO_MASTER=()
 
@@ -1108,9 +1133,9 @@ main() {
         fi
     done
 
-    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 12); fi
-    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10); fi
-    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(11); fi
+    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 13); fi
+    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10 11); fi
+    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(12); fi
 
     IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
     unset IFS
@@ -1127,8 +1152,8 @@ main() {
             if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
                 echo -e "\nOption $((choice)) is already installed." && sleep 1
             else
-                # Sub-menu for Local LLM Stack (index 11)
-                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 0 ]]; then
+                # Sub-menu for Local LLM Stack (index 12)
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
                     echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
                     echo "  1. Ollama"
                     echo "  2. llama.cpp with CPU"
@@ -1144,12 +1169,12 @@ main() {
 
                 MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
 
-                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 0 ]]; then
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 0 ]]; then
                     LLM_BACKEND_CHOICE=""
                 fi
 
-                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 12) require NVM (index 4)
-                if [[ ($master_index -eq 6 || $master_index -eq 12) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
+                # Dependency logic: Gemini CLI (index 6) and OpenClaw (index 13) require NVM (index 4)
+                if [[ ($master_index -eq 6 || $master_index -eq 13) && ${MASTER_SELECTIONS[$master_index]} -eq 1 && ${MASTER_INSTALLED_STATE[4]} -eq 0 ]]; then
                     if [[ ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                         MASTER_SELECTIONS[4]=1
                         ensure_active_index 4
@@ -1158,18 +1183,18 @@ main() {
                 elif [[ $master_index -eq 4 && ${MASTER_SELECTIONS[4]} -eq 0 ]]; then
                     local unselected_deps=0
                     if [[ ${MASTER_SELECTIONS[6]} -eq 1 ]]; then MASTER_SELECTIONS[6]=0; unselected_deps=1; fi
-                    if [[ ${MASTER_SELECTIONS[12]} -eq 1 ]]; then MASTER_SELECTIONS[12]=0; unselected_deps=1; fi
+                    if [[ ${MASTER_SELECTIONS[13]} -eq 1 ]]; then MASTER_SELECTIONS[13]=0; unselected_deps=1; fi
                     if [[ $unselected_deps -eq 1 ]]; then
                         echo -e "\n[Auto-unselected] Gemini and/or OpenClaw were unselected because they require NVM." && sleep 2
                     fi
                 fi
 
-                # Dependency logic for Local LLM Stack (index 11)
-                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 1 ]]; then
+                # Dependency logic for Local LLM Stack (index 12)
+                if [[ $master_index -eq 12 && ${MASTER_SELECTIONS[12]} -eq 1 ]]; then
                     local auto_selected=""
                     if [[ ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
-                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[8]} -eq 0 && ${MASTER_INSTALLED_STATE[8]} -eq 0 ]]; then MASTER_SELECTIONS[8]=1; ensure_active_index 8; auto_selected+="CUDA Toolkit, "; fi
-                    if [[ "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[9]} -eq 0 && ${MASTER_INSTALLED_STATE[9]} -eq 0 ]]; then MASTER_SELECTIONS[9]=1; ensure_active_index 9; auto_selected+="NVIDIA CTK, "; fi
+                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[9]} -eq 0 && ${MASTER_INSTALLED_STATE[9]} -eq 0 ]]; then MASTER_SELECTIONS[9]=1; ensure_active_index 9; auto_selected+="CUDA Toolkit, "; fi
+                    if [[ "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="NVIDIA CTK, "; fi
                     if [[ -n "$auto_selected" ]]; then
                         echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
                     fi
@@ -1228,7 +1253,12 @@ main() {
 
         echo -e "\n\e[1;32m================================================================\e[0m"
         echo -e "\e[1;32mINSTALLATION COMPLETE!\e[0m"
-        echo -e "\e[1;33mPlease run the following command to activate your new environment:\e[0m"
+        if [[ "$IS_DIFFERENT_USER" == true ]]; then
+            echo -e "\e[1;33mPlease switch to your new user (\e[1;36m$TARGET_USER\e[1;33m) and run the following command to activate your environment:\e[0m"
+            echo -e "\e[1;36msu - $TARGET_USER\e[0m"
+        else
+            echo -e "\e[1;33mPlease run the following command to activate your new environment:\e[0m"
+        fi
         if [ -f "$TARGET_USER_HOME/.zshrc" ] && [[ "$SHELL" == *"zsh"* || "${MASTER_SELECTIONS[1]}" == "1" || "${MASTER_INSTALLED_STATE[1]}" == "1" ]]; then
             echo -e "\e[1;36msource ~/.zshrc\e[0m"
         else
