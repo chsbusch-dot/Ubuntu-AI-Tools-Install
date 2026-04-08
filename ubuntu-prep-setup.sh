@@ -1060,21 +1060,49 @@ main() {
         fi
     }
 
-    echo -e "\n\e[1;36mSelect Installation Goals (space-separated, e.g., 1 2 3):\e[0m"
-    echo "  1. OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
-    echo "  2. VGPU Setup (NVIDIA Driver, CUDA, Container Toolkit, cuDNN)"
-    echo "  3. Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
-    read -p "Your choices [1 2 3]: " goal_choices
-    goal_choices=${goal_choices:-1 2 3}
+    local GOAL_SELECTIONS=(0 0 0)
+    local GOAL_OPTIONS=(
+        "OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
+        "VGPU Setup (NVIDIA Driver, CUDA, Container Toolkit, cuDNN)"
+        "Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
+    )
 
-    if [[ " $goal_choices " =~ " 1 " ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 11); fi
-    if [[ " $goal_choices " =~ " 2 " ]]; then ACTIVE_INDICES+=(7 8 9 10); fi
-    if [[ " $goal_choices " =~ " 3 " ]]; then ACTIVE_INDICES+=(12); fi
+    while true; do
+        clear
+        echo -e "\n\e[1;36mSelect Installation Goals:\e[0m"
+        for i in "${!GOAL_OPTIONS[@]}"; do
+            if [[ ${GOAL_SELECTIONS[$i]} -eq 1 ]]; then
+                echo -e " \e[1;32m[x]\e[0m $((i+1)). ${GOAL_OPTIONS[$i]}"
+            else
+                echo -e " [ ] $((i+1)). ${GOAL_OPTIONS[$i]}"
+            fi
+        done
+        echo "---------------------------------"
+        echo "Use numbers [1-3] to toggle a goal. Press 'a' to select all."
+        echo "Press 'c' to continue to the detailed menu, or 'q' to quit."
+        read -p "Your choice: " goal_choice
+        
+        if [[ "$goal_choice" =~ ^[1-3]$ ]]; then
+            local index=$((goal_choice - 1))
+            GOAL_SELECTIONS[$index]=$((1 - GOAL_SELECTIONS[$index]))
+        elif [[ "$goal_choice" == "a" || "$goal_choice" == "A" ]]; then
+            GOAL_SELECTIONS=(1 1 1)
+        elif [[ "$goal_choice" == "c" || "$goal_choice" == "C" ]]; then
+            if [[ ${GOAL_SELECTIONS[0]} -eq 0 && ${GOAL_SELECTIONS[1]} -eq 0 && ${GOAL_SELECTIONS[2]} -eq 0 ]]; then
+                echo -e "\nPlease select at least one goal before continuing." && sleep 1
+            else
+                break
+            fi
+        elif [[ "$goal_choice" == "q" || "$goal_choice" == "Q" ]]; then
+            echo -e "\nExiting."; exit 0
+        else
+            echo -e "\nInvalid option." && sleep 1
+        fi
+    done
 
-    if [ ${#ACTIVE_INDICES[@]} -eq 0 ]; then
-        echo "No goals selected. Exiting."
-        exit 0
-    fi
+    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(0 1 2 3 4 5 6 11); fi
+    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10); fi
+    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(12); fi
 
     IFS=$'\n' ACTIVE_INDICES=($(sort -n <<<"${ACTIVE_INDICES[*]}"))
     unset IFS
