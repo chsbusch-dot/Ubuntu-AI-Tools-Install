@@ -407,6 +407,8 @@ install_vgpu_driver_from_link() {
 
     if [[ -f "$downloaded_file_path" ]]; then
         print_info "Installing driver from ${downloaded_file_path}..."
+        # Pre-install dkms to prevent scary dpkg dependency errors during unpacking
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y dkms
         # Use `dpkg -i` which runs as root and avoids the `_apt` user permission
         # issues that `apt install` can have with local files.
         sudo dpkg -i "$downloaded_file_path" || sudo apt-get -f install -y
