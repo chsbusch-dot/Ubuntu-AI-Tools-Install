@@ -529,26 +529,26 @@ install_openclaw() {
 
     local openclaw_command
     openclaw_command=$(cat <<'EOF'
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+        export NVM_DIR="$HOME/.nvm";
+        [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh";
 
         # Source secrets so OpenClaw automatically uses configured API keys
-        [ -f "$HOME/.env.secrets" ] && source "$HOME/.env.secrets"
+        [ -f "$HOME/.env.secrets" ] && source "$HOME/.env.secrets";
 
         # Load Homebrew if it exists so OpenClaw can use it to install skills
-        [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ] && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ] && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)";
 
         # Load CUDA paths if they exist
-        [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH"
-        [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+        [ -d "/usr/local/cuda/bin" ] && export PATH="/usr/local/cuda/bin:$PATH";
+        [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH";
 
-        curl -fsSL https://openclaw.ai/install.sh | bash
+        curl -fsSL https://openclaw.ai/install.sh | bash;
 
-        export PATH="$HOME/.local/bin:$PATH"
-        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+        export PATH="$HOME/.local/bin:$PATH";
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)";
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus";
 
-        openclaw onboard --install-daemon
+        openclaw onboard --install-daemon;
 EOF
 )
 
