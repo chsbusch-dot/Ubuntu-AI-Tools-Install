@@ -23,9 +23,9 @@ HAS_NVIDIA_GPU=false
 GPU_STATUS=""
 LLM_BACKEND_CHOICE=""
 INSTALL_OPENWEBUI="n"
-LLAMACPP_MODEL_REPO=""
-LLAMACPP_MODEL_FILE=""
-OLLAMA_PULL_MODEL=""
+EXPOSE_LLM_ENGINE="n"
+LOAD_DEFAULT_MODEL="n"
+LLM_DEFAULT_MODEL_CHOICE=""
 
 # --- Helper Functions ---
 
@@ -578,13 +578,20 @@ install_local_llm() {
         print_success "llama.cpp installed globally to /usr/local/bin."
 
         echo ""
-        if [[ -n "$LLAMACPP_MODEL_REPO" && -n "$LLAMACPP_MODEL_FILE" ]]; then
-            print_info "Downloading and running $LLAMACPP_MODEL_FILE..."
-            sudo -u "$TARGET_USER" bash -c "export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\"; llama-cli --hf-repo \"$LLAMACPP_MODEL_REPO\" --hf-file \"$LLAMACPP_MODEL_FILE\" -p \"Once upon a time,\" -n 128"
+        if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
+            print_info "Downloading and running selected default model..."
+            local cmd_prefix="export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\"; llama-cli"
+            if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "1" ]]; then
+                sudo -u "$TARGET_USER" bash -c "$cmd_prefix --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -ngl 99 -p \"Once upon a time,\" -n 128"
+            elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "2" ]]; then
+                sudo -u "$TARGET_USER" bash -c "$cmd_prefix --hf-repo QuantFactory/Meta-Llama-3-8B-Instruct-GGUF --hf-file Meta-Llama-3-8B-Instruct.Q6_K.gguf -ngl 99 -c 8192 --temp 0.1 -p \"Explain the relationship between entropy and personal agency in closed systems.\""
+            elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "3" ]]; then
+                sudo -u "$TARGET_USER" bash -c "$cmd_prefix --hf-repo bartowski/gemma-2-27b-it-GGUF --hf-file gemma-2-27b-it-Q4_K_M.gguf -ngl 99 -fa -c 16384 -np 1 --ctk q8_0 --ctv q8_0 -ub 512 -p \"<start_of_turn>user\\nDo not think. Explain why personal agency is a prerequisite for intelligence.<end_of_turn>\\n<start_of_turn>model\\n\""
+            fi
         fi
 
         echo ""
-        if [[ -n "$LLAMACPP_MODEL_REPO" && -n "$LLAMACPP_MODEL_FILE" ]]; then
+        if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
             read -p "Do you want to install llama.cpp as a background systemd service (survives reboots)? [y/N]: " install_llama_service
             if [[ "$install_llama_service" == "y" || "$install_llama_service" == "Y" ]]; then
                 print_info "Creating llama-server systemd service..."
@@ -602,7 +609,7 @@ After=network.target
 [Service]
 User=$TARGET_USER
 $env_cuda
-ExecStart=/usr/local/bin/llama-server --hf-repo $LLAMACPP_MODEL_REPO --hf-file $LLAMACPP_MODEL_FILE --host 0.0.0.0 --port 8081
+ExecStart=/usr/local/bin/llama-server $llama_host_args
 Restart=always
 RestartSec=3
 
@@ -615,17 +622,12 @@ EOF"
             fi
         fi
 
-        local server_hint_args="--model /srv/models/llama.gguf"
-        if [[ -n "$LLAMACPP_MODEL_REPO" ]]; then
-            server_hint_args="--hf-repo $LLAMACPP_MODEL_REPO --hf-file $LLAMACPP_MODEL_FILE"
-        fi
-
         if [[ "$install_llamacpp_cuda" == "y" ]]; then
             print_info "To run the server manually, use a command like this (hiding the first compute device if needed):"
-            echo "CUDA_VISIBLE_DEVICES=\"-0\" llama-server $server_hint_args --host 0.0.0.0 --port 8081"
+            echo "CUDA_VISIBLE_DEVICES=\"-0\" llama-server --model /srv/models/llama.gguf $llama_host_args"
         else
             print_info "To run the server manually, use a command like this:"
-            echo "llama-server $server_hint_args --host 0.0.0.0 --port 8081"
+            echo "llama-server --model /srv/models/llama.gguf $llama_host_args"
         fi
     fi
 
@@ -633,13 +635,14 @@ EOF"
         print_info "Installing Ollama..."
         curl -fsSL https://ollama.com/install.sh | sh
 
-        read -p "Do you want to allow external access to Ollama (bind to 0.0.0.0)? [y/N]: " allow_ext
-        if [[ "$allow_ext" == "y" || "$allow_ext" == "Y" ]]; then
+        if [[ "$EXPOSE_LLM_ENGINE" == "y" ]]; then
             print_info "Configuring Ollama for external access..."
             sudo mkdir -p /etc/systemd/system/ollama.service.d
-            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
+            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0:11434\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
             sudo systemctl daemon-reload
             sudo systemctl restart ollama
+            sudo ufw allow 11434/tcp &>/dev/null || true
+            POST_INSTALL_ACTIONS+=("ufw")
             print_success "Ollama configured for external access."
         fi
 
@@ -651,10 +654,12 @@ EOF"
         print_info "Locally installed Ollama models:"
         ollama list || echo "No models installed yet."
         echo ""
-        if [[ -n "$OLLAMA_PULL_MODEL" ]]; then
-            print_info "Pulling $OLLAMA_PULL_MODEL..."
-            ollama pull "$OLLAMA_PULL_MODEL"
-            print_success "$OLLAMA_PULL_MODEL pulled successfully."
+        if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
+            print_info "Downloading and running default model..."
+            if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "1" ]]; then ollama run tinydolphin "Once upon a time,"
+            elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "2" ]]; then ollama run llama3 "Explain the relationship between entropy and personal agency in closed systems."
+            elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "3" ]]; then ollama run gemma2:27b "Do not think. Explain why personal agency is a prerequisite for intelligence."
+            fi
         fi
     fi
 
@@ -683,6 +688,10 @@ EOF"
                 docker_cmd+=(--gpus all)
             fi
             docker_cmd+=(-e OLLAMA_BASE_URL=http://127.0.0.1:11434)
+            if [[ "$EXPOSE_LLM_ENGINE" == "y" ]]; then
+                docker_cmd+=(-e HOST='0.0.0.0')
+                sudo ufw allow 8080/tcp &>/dev/null || true
+            fi
             if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
                 print_info "Configuring Open-WebUI to connect to llama.cpp backend..."
                 docker_cmd+=(-e OPENAI_API_BASE_URL=http://127.0.0.1:8081/v1 -e OPENAI_API_KEY=sk-llamacpp)
@@ -1259,16 +1268,6 @@ main() {
             EXPOSE_KEYS+=("openclaw")
             EXPOSE_SELECTIONS+=(0)
         fi
-        if command -v ollama &> /dev/null; then
-            EXPOSE_OPTIONS+=("Ollama API (Port 11434)")
-            EXPOSE_KEYS+=("ollama")
-            EXPOSE_SELECTIONS+=(0)
-        fi
-        if command -v llama-server &> /dev/null; then
-            EXPOSE_OPTIONS+=("Llama.cpp Server (Port 8081)")
-            EXPOSE_KEYS+=("llamacpp")
-            EXPOSE_SELECTIONS+=(0)
-        fi
 
         local exposed_msg=""
         if [ ${#EXPOSE_OPTIONS[@]} -gt 0 ]; then
@@ -1314,22 +1313,21 @@ main() {
                             sudo ufw allow 18789/tcp &>/dev/null || true
                             exposed_msg+="  - OpenClaw Gateway is at IP:18789\n"
                             ;;
-                        "ollama")
-                            sudo mkdir -p /etc/systemd/system/ollama.service.d
-                            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
-                            sudo systemctl daemon-reload
-                            sudo systemctl restart ollama
-                            sudo ufw allow 11434/tcp &>/dev/null || true
-                            exposed_msg+="  - Ollama is at IP:11434 (or 8081 if configured)\n"
-                            ;;
-                        "llamacpp")
-                            sudo ufw allow 8081/tcp &>/dev/null || true
-                            exposed_msg+="  - llama.cpp is at IP:8081\n"
-                            ;;
                     esac
                 fi
             done
             if [[ $applied_exposures -eq 1 ]]; then print_success "Exposure settings applied."; fi
+        fi
+
+        if [[ "$EXPOSE_LLM_ENGINE" == "y" ]]; then
+            if [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then
+                exposed_msg+="  - Ollama is at IP:11434\n"
+            else
+                exposed_msg+="  - llama.cpp is at IP:8081 (or 8080 depending on configuration)\n"
+            fi
+        fi
+        if [[ "$INSTALL_OPENWEBUI" == "y" ]]; then
+            exposed_msg+="  - Open-WebUI is at IP:8080\n"
         fi
         
         if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* || -n "$exposed_msg" ]]; then
