@@ -587,9 +587,15 @@ install_nvtop() {
     print_success "nvtop installed successfully."
 }
 
-# 10. Install CUDA Toolkit
+# 10. Install CUDA
 install_cuda_toolkit() {
-    print_info "Installing CUDA Toolkit..."
+    print_info "Installing CUDA..."
+    read -p "Do you want to install gcc? [Y/n]: " install_gcc
+    if [[ "$install_gcc" != "n" && "$install_gcc" != "N" ]]; then
+        print_info "Installing gcc..."
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc
+    fi
     # Make CUDA repo installation dynamic based on Ubuntu version
     UBUNTU_VERSION=$(lsb_release -sr | tr -d '.')
     wget "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-keyring_1.1-1_all.deb"
@@ -1022,7 +1028,7 @@ check_installations() {
 
     # 10. CUDA Toolkit (index 10)
     if [ -f "/usr/local/cuda/bin/nvcc" ]; then
-        print_info "Found existing CUDA Toolkit."
+        print_info "Found existing CUDA."
         MASTER_INSTALLED_STATE[10]=1
     fi
 
@@ -1074,7 +1080,7 @@ print_final_summary() {
     fi
 
     if command -v nvcc &> /dev/null; then
-        print_info "CUDA Toolkit:"
+        print_info "CUDA:"
         nvcc --version
         echo ""
     fi
@@ -1200,7 +1206,7 @@ main() {
         "Install NVIDIA vGPU Driver"
         "Install btop (System Monitor)"
         "Install nvtop (GPU Monitor)"
-        "Install CUDA Toolkit"
+        "Install CUDA"
         "Install NVIDIA Container Toolkit"
         "Install cuDNN"
         "Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)"
@@ -1417,17 +1423,17 @@ main() {
                     fi
                 fi
 
-                # Dependency logic for vGPU Driver (index 7) requiring Docker (index 3)
-                if [[ $master_index -eq 7 && ${MASTER_SELECTIONS[7]} -eq 1 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
+                # Dependency logic for NVIDIA Container Toolkit (index 11) requiring Docker (index 3)
+                if [[ $master_index -eq 11 && ${MASTER_SELECTIONS[11]} -eq 1 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
                     if [[ ${MASTER_SELECTIONS[3]} -eq 0 ]]; then
                         MASTER_SELECTIONS[3]=1
                         ensure_active_index 3
-                        echo -e "\n[Auto-selected] Docker is required for vGPU Driver installation." && sleep 1.5
+                        echo -e "\n[Auto-selected] Docker is required for NVIDIA Container Toolkit installation." && sleep 1.5
                     fi
                 elif [[ $master_index -eq 3 && ${MASTER_SELECTIONS[3]} -eq 0 ]]; then
-                    if [[ ${MASTER_SELECTIONS[7]} -eq 1 ]]; then
-                        MASTER_SELECTIONS[7]=0
-                        echo -e "\n[Auto-unselected] NVIDIA vGPU Driver was unselected because it requires Docker." && sleep 2
+                    if [[ ${MASTER_SELECTIONS[11]} -eq 1 ]]; then
+                        MASTER_SELECTIONS[11]=0
+                        echo -e "\n[Auto-unselected] NVIDIA Container Toolkit was unselected because it requires Docker." && sleep 2
                     fi
                 fi
 
@@ -1435,7 +1441,7 @@ main() {
                 if [[ $master_index -eq 13 && ${MASTER_SELECTIONS[13]} -eq 1 ]]; then
                     local auto_selected=""
                     if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
-                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="CUDA Toolkit, "; fi
+                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="CUDA, "; fi
                     if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" || "$LLM_BACKEND_CHOICE" == "llama_cuda") && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[11]} -eq 0 && ${MASTER_INSTALLED_STATE[11]} -eq 0 ]]; then MASTER_SELECTIONS[11]=1; ensure_active_index 11; auto_selected+="NVIDIA CTK, "; fi
                     if [[ -n "$auto_selected" ]]; then
                         echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
@@ -1449,7 +1455,7 @@ main() {
                     if [[ $master_index -eq 11 && -z "$LLM_BACKEND_CHOICE" ]]; then LLM_BACKEND_CHOICE="ollama"; fi
                 fi
             done
-            if [[ ${MASTER_SELECTIONS[7]} -eq 1 && ${MASTER_INSTALLED_STATE[3]} -eq 0 && ${MASTER_SELECTIONS[3]} -eq 0 ]]; then
+            if [[ ${MASTER_SELECTIONS[11]} -eq 1 && ${MASTER_INSTALLED_STATE[3]} -eq 0 && ${MASTER_SELECTIONS[3]} -eq 0 ]]; then
                 MASTER_SELECTIONS[3]=1
                 ensure_active_index 3
             fi
