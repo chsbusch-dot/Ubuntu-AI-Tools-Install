@@ -309,6 +309,44 @@ install_zsh() {
 PROMPT="%{$fg_bold[yellow]%}%n@%m%{$reset_color%} > %{$fg[cyan]%}%/%{$reset_color%} > "
 EOP
 
+    print_info "Configuring systemd to auto-update Oh My Zsh and plugins on boot..."
+    # Disable the native OMZ auto-update prompt so it doesn't interrupt terminal launches
+    sudo sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' "$TARGET_USER_HOME/.zshrc"
+
+    sudo bash -c "cat <<EOF > /usr/local/bin/update-omz.sh
+#!/bin/bash
+export ZSH=\"$TARGET_USER_HOME/.oh-my-zsh\"
+
+# Update Oh My Zsh core
+sh \"\$ZSH/tools/upgrade.sh\" >/dev/null 2>&1 || true
+
+# Update custom plugins
+for plugin in \"\$ZSH/custom/plugins/\"*/; do
+    if [ -d \"\${plugin}.git\" ]; then
+        git -C \"\$plugin\" pull --quiet || true
+    fi
+done
+EOF"
+    sudo chmod +x /usr/local/bin/update-omz.sh
+
+    sudo bash -c "cat <<EOF > /etc/systemd/system/omz-update.service
+[Unit]
+Description=Auto-update Oh My Zsh and Custom Plugins
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$TARGET_USER
+ExecStart=/usr/local/bin/update-omz.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+    sudo systemctl daemon-reload
+    sudo systemctl enable omz-update.service
+
     print_success "Zsh and plugins installed."
     POST_INSTALL_ACTIONS+=("zsh")
 }
@@ -364,7 +402,8 @@ install_nvm_node() {
     print_info "Running the NVM installation script silently..."
     # This runs the installer as the target user, which updates their .bashrc/.zshrc.
     # Use -s for curl to silence progress bar, and redirect bash output to /dev/null.
-    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash > /dev/null 2>&1"
+    local latest_nvm=$(curl -sL https://api.github.com/repos/nvm-sh/nvm/releases/latest | jq -r .tag_name 2>/dev/null || echo "v0.39.7")
+    sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/${latest_nvm}/install.sh | bash > /dev/null 2>&1"
 
     print_info "Installing the latest LTS version of Node.js..."
     # Explicitly set NVM_DIR using the exact target path and source nvm.sh within the subshell.
@@ -717,7 +756,9 @@ install_container_toolkit() {
         sleep 3 # Give Docker a moment to fully initialize its network bridges
 
         print_info "Testing NVIDIA Container Toolkit (this may download a container image)..."
-        sudo docker run --rm --gpus all ubuntu:24.04 nvidia-smi || \
+        local ubuntu_version
+        ubuntu_version=$(lsb_release -sr)
+        sudo docker run --rm --gpus all "ubuntu:${ubuntu_version}" nvidia-smi || \
             echo "⚠️ Docker NVIDIA test failed. A reboot is likely required to load the NVIDIA drivers, or your network may be experiencing IPv6 routing issues."
     else
         print_info "Docker is not installed. Skipping Docker runtime configuration."
@@ -728,8 +769,14 @@ install_container_toolkit() {
 install_cudnn() {
     print_info "Installing cuDNN..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zlib1g
-    # This will install the latest cuDNN compatible with the installed CUDA toolkit
-    sudo DEBIAN_FRONTEND=noninteractive apt-get -y install cudnn9-cuda-13 # As requested, for CUDA 13.x
+    
+    # Dynamically detect the installed CUDA major version to install the matching cuDNN
+    local cuda_major="12" # Fallback if detection fails
+    if [ -f "/usr/local/cuda/bin/nvcc" ]; then
+        cuda_major=$(/usr/local/cuda/bin/nvcc --version | sed -n 's/^.*release \([0-9]\+\)\..*$/\1/p')
+    fi
+    
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -y install "cudnn9-cuda-${cuda_major}"
     POST_INSTALL_ACTIONS+=("reboot")
 }
 
@@ -1218,7 +1265,7 @@ check_installations() {
     fi
 
     # 13. cuDNN (index 13)
-    if dpkg -l | grep -q 'cudnn9-cuda-13'; then
+    if dpkg -l | grep -E -q 'cudnn[0-9]+-cuda'; then
         print_info "Found existing cuDNN installation."
         MASTER_INSTALLED_STATE[13]=1
     fi
