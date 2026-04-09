@@ -165,6 +165,7 @@ setup_env_secrets() {
 # export CLAUDE_API_KEY="your_claude_key"
 # export NVIDIA_API_KEY="your_nvidia_api_key"
 # export NVIDIA_VGPU_DRIVER_URL="ftp://192.168.1.31/shared/.../nvidia.deb"
+# export NVIDIA_VGPU_TOKEN_URL="ftp://192.168.1.31/shared/.../token.tok"
 # export NVIDIA_VGPU_FTP_AUTH="admin:password"
 EOF
         sudo chmod 600 "$TARGET_USER_HOME/.env.secrets"
@@ -1161,25 +1162,84 @@ main() {
             else
                 # Sub-menu for Local LLM Stack (index 13)
                 if [[ $master_index -eq 13 && ${MASTER_SELECTIONS[13]} -eq 0 ]]; then
-                    echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
-                    echo "  1. Ollama"
-                    echo "  2. llama.cpp with CPU"
-                    echo "  3. llama.cpp with CUDA"
-                    read -p "Your choice [1-3]: " llm_choice
-                    case "$llm_choice" in
-                        1) LLM_BACKEND_CHOICE="ollama" ;;
-                        2) LLM_BACKEND_CHOICE="llama_cpu" ;;
-                        3) LLM_BACKEND_CHOICE="llama_cuda" ;;
-                        *) echo -e "\nInvalid choice. Cancelling option." && sleep 1; continue ;;
-                    esac
+                    LLM_BACKEND_CHOICE=""
+                    local cancel_llm=false
+                    while true; do
+                        clear
+                        echo -e "\n\e[1;36mSelect Local LLM Backend (Exclusive):\e[0m"
+                        if [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then echo -e "  \e[1;32m(*)\e[0m 1. Ollama"; else echo "  ( ) 1. Ollama"; fi
+                        if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" ]]; then echo -e "  \e[1;32m(*)\e[0m 2. llama.cpp with CPU"; else echo "  ( ) 2. llama.cpp with CPU"; fi
+                        if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then echo -e "  \e[1;32m(*)\e[0m 3. llama.cpp with CUDA"; else echo "  ( ) 3. llama.cpp with CUDA"; fi
+                        echo "---------------------------------"
+                        echo "Use numbers [1-3] to toggle. Press 'c' to confirm, 'q' to cancel."
+                        read -p "Your choice: " llm_choice
+                        case "$llm_choice" in
+                            1) LLM_BACKEND_CHOICE="ollama" ;;
+                            2) LLM_BACKEND_CHOICE="llama_cpu" ;;
+                            3) LLM_BACKEND_CHOICE="llama_cuda" ;;
+                            c|C) 
+                                if [[ -z "$LLM_BACKEND_CHOICE" ]]; then echo -e "\nPlease select a backend." && sleep 1; else break; fi
+                                ;;
+                            q|Q) cancel_llm=true; break ;;
+                            *) echo -e "\nInvalid choice." && sleep 1 ;;
+                        esac
+                    done
 
-                    if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
-                        read -p "Do you want to test llama.cpp with a small model (TinyStories) after install? [y/N]: " TEST_LLAMACPP
-                    elif [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then
-                        read -p "Enter an Ollama model name to pull (e.g., 'llama3', 'mistral', or press Enter to skip): " OLLAMA_PULL_MODEL
+                    if [[ "$cancel_llm" == true ]]; then continue; fi
+
+                INSTALL_OPENWEBUI="n"
+                EXPOSE_LLM_ENGINE="n"
+                LOAD_DEFAULT_MODEL="n"
+                LLM_DEFAULT_MODEL_CHOICE=""
+                
+                local opt_selections=(0 0 0)
+                local opt_options=(
+                    "Install Open-WebUI?"
+                    "Expose ${LLM_BACKEND_CHOICE} on 0.0.0.0?"
+                    "Load default model?"
+                )
+                while true; do
+                    clear
+                    echo -e "\n\e[1;36mConfigure Additional Options:\e[0m"
+                    for i in "${!opt_options[@]}"; do
+                        if [[ ${opt_selections[$i]} -eq 1 ]]; then
+                            echo -e " \e[1;32m[x]\e[0m $((i+1)). ${opt_options[$i]}"
+                        else
+                            echo -e " [ ] $((i+1)). ${opt_options[$i]}"
+                        fi
+                    done
+                    echo "---------------------------------"
+                    echo "Use numbers [1-3] to toggle. Press 'c' to confirm."
+                    read -p "Your choice: " opt_choice
+                    if [[ "$opt_choice" =~ ^[1-3]$ ]]; then
+                        local idx=$((opt_choice - 1))
+                        opt_selections[$idx]=$((1 - opt_selections[$idx]))
+                    elif [[ "$opt_choice" == "c" || "$opt_choice" == "C" ]]; then
+                        break
+                    else
+                        echo -e "\nInvalid option." && sleep 1
                     fi
+                done
 
-                    read -p "Install Open-WebUI (requires Docker)? [y/N]: " INSTALL_OPENWEBUI
+                [[ ${opt_selections[0]} -eq 1 ]] && INSTALL_OPENWEBUI="y"
+                [[ ${opt_selections[1]} -eq 1 ]] && EXPOSE_LLM_ENGINE="y"
+                [[ ${opt_selections[2]} -eq 1 ]] && LOAD_DEFAULT_MODEL="y"
+
+                if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
+                    echo -e "\n\e[1;36mSelect a default model to load:\e[0m"
+                    echo "  1. Tiny Model (TinyStories 656K)"
+                    echo "  2. Meta-Llama-3-8B-Instruct"
+                    echo "  3. Gemma 4 (31b) [Gemma 2 27b]"
+                    echo "  4. Specify a different model to download"
+                    read -p "Your choice [1-4]: " LLM_DEFAULT_MODEL_CHOICE
+                    
+                    if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "4" && "$LLM_BACKEND_CHOICE" == "ollama" ]]; then
+                        read -p "Enter an Ollama model name to pull (e.g., 'llama3', 'mistral'): " OLLAMA_PULL_MODEL
+                    elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "4" && ("$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda") ]]; then
+                        read -p "Enter HuggingFace Repo (e.g., 'raincandy-u/TinyStories-656K-Q8_0-GGUF'): " LLAMACPP_MODEL_REPO
+                        read -p "Enter HuggingFace File (e.g., 'tinystories-656k-q8_0.gguf'): " LLAMACPP_MODEL_FILE
+                    fi
+                fi
                 fi
 
                 MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
