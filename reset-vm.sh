@@ -13,24 +13,27 @@ fi
 if [ "$#" -eq 3 ]; then
     ESXI_HOST=$1
     ESXI_USER=$2
-    VM_NAME=$3
+    TARGET_VM=$3
 elif [ "$#" -eq 1 ]; then
-    VM_NAME=$1
+    TARGET_VM=$1
     if [ -z "$ESXI_HOST" ] || [ -z "$ESXI_USER" ]; then
         echo "❌ Error: ESXI_HOST or ESXI_USER not set in ~/.env.secrets."
-        echo "Usage: $0 <esxi_host> <esxi_user> <vm_name>"
-        echo "   Or: $0 <vm_name> (if host and user are in ~/.env.secrets)"
+        echo "Usage: $0 <esxi_host> <esxi_user> <vm_name_or_ip>"
+        echo "   Or: $0 <vm_name_or_ip> (if host and user are in ~/.env.secrets)"
         exit 1
     fi
+elif [ "$#" -eq 0 ] && [ -n "$ESXI_GUEST" ] && [ -n "$ESXI_HOST" ] && [ -n "$ESXI_USER" ]; then
+    TARGET_VM="$ESXI_GUEST"
 else
-    echo "Usage: $0 <esxi_host> <esxi_user> <vm_name>"
-    echo "   Or: $0 <vm_name> (if host and user are in ~/.env.secrets)"
+    echo "Usage: $0 <esxi_host> <esxi_user> <vm_name_or_ip>"
+    echo "   Or: $0 <vm_name_or_ip> (if host and user are in ~/.env.secrets)"
+    echo "   Or: $0 (if host, user, and guest are in ~/.env.secrets)"
     echo "Example: $0 192.168.1.100 root my-test-vm"
-    echo "         $0 my-test-vm"
+    echo "         $0 10.0.0.52"
     exit 1
 fi
 
-echo "Connecting to $ESXI_HOST as $ESXI_USER to reset VM: $VM_NAME..."
+echo "Connecting to $ESXI_HOST as $ESXI_USER to reset target: $TARGET_VM..."
 
 if [ -n "$ESXI_PASSWORD" ]; then
     if ! command -v sshpass &> /dev/null; then
@@ -46,11 +49,26 @@ fi
 
 # Connect via SSH and pass the commands using a heredoc
 $SSH_CMD "${ESXI_USER}@${ESXI_HOST}" << EOF
-    # Get the VM ID by matching the VM name exactly
-    VMID=\$(vim-cmd vmsvc/getallvms | awk -v vm="\$VM_NAME" '\$2 == vm {print \$1}' | head -n 1)
+    # Check if target looks like an IP address
+    if echo "$TARGET_VM" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "🔍 Target is an IP address. Searching VMware Tools for a match..."
+        VMID=""
+        VM_NAME=""
+        for id in \$(vim-cmd vmsvc/getallvms | awk 'NR>1 {print \$1}' | grep -E '^[0-9]+$'); do
+            if vim-cmd vmsvc/get.summary "\$id" 2>/dev/null | grep -q "ipAddress = \"$TARGET_VM\""; then
+                VMID="\$id"
+                VM_NAME=\$(vim-cmd vmsvc/get.summary "\$id" | grep "name = " | head -n 1 | cut -d'"' -f2)
+                break
+            fi
+        done
+    else
+        echo "🔍 Target is a Name. Searching ESXi inventory..."
+        VM_NAME="$TARGET_VM"
+        VMID=\$(vim-cmd vmsvc/getallvms | awk -v vm="$TARGET_VM" '\$2 == vm {print \$1}' | head -n 1)
+    fi
 
     if [ -z "\$VMID" ]; then
-        echo "❌ Error: VM '\$VM_NAME' not found on host \$ESXI_HOST."
+        echo "❌ Error: VM '$TARGET_VM' not found or IP is not reporting to host $ESXI_HOST."
         exit 1
     fi
 
