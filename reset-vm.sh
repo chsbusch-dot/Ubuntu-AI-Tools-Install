@@ -80,21 +80,16 @@ $SSH_CMD "${ESXI_USER}@${ESXI_HOST}" << EOF
     echo "✅ Found VM '\$VM_NAME' with ID: \$VMID"
 
     echo "🔍 Fetching snapshot ID..."
-    SNAPSHOT_ID=\$(vim-cmd vmsvc/snapshot.get "\$VMID" | grep -i "Snapshot Id" | tail -n 1 | awk -F':' '{print \$2}' | tr -d ' ')
+    SNAPSHOT_ID=\$(vim-cmd vmsvc/snapshot.get "\$VMID" | grep -i "Snapshot Id" | tail -n 1 | awk -F':' '{print \$2}' | awk '{print \$1}')
 
     if [ -z "\$SNAPSHOT_ID" ]; then
         echo "❌ Error: No snapshots found for VM '\$VM_NAME'."
         exit 1
     fi
 
-    echo "🔄 Reverting VM to Snapshot ID: \$SNAPSHOT_ID..."
-    vim-cmd vmsvc/snapshot.revert "\$VMID" "\$SNAPSHOT_ID" 0 0
-
-    # Check power state and power on if it is currently off
-    if vim-cmd vmsvc/power.getstate "\$VMID" | grep -iq "Powered off"; then
-        echo "⚡ Powering on the VM..."
-        vim-cmd vmsvc/power.on "\$VMID" > /dev/null
-    fi
+    echo "🔄 Reverting VM to Snapshot ID: \$SNAPSHOT_ID and powering it on..."
+    # The trailing '0' tells ESXi to automatically power on the VM after reverting
+    vim-cmd vmsvc/snapshot.revert "\$VMID" "\$SNAPSHOT_ID" 0
 
     echo "🎉 VM '\$VM_NAME' successfully reset and ready."
 EOF
