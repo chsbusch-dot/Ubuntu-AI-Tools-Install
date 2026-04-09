@@ -203,6 +203,9 @@ setup_env_secrets() {
 # export NVIDIA_VGPU_DRIVER_URL="ftp://192.168.1.31/shared/.../nvidia.deb"
 # export NVIDIA_VGPU_TOKEN_URL="ftp://192.168.1.31/shared/.../token.tok"
 # export NVIDIA_VGPU_DOWNLOAD_AUTH="admin:password" # Works for FTP, HTTP Basic Auth, and SMB
+# export ESXI_HOST="192.168.1.100"
+# export ESXI_USER="root"
+# export ESXI_PASSWORD="your_esxi_password"
 EOF
         sudo chmod 600 "$TARGET_USER_HOME/.env.secrets"
     fi
@@ -225,6 +228,7 @@ EOF
                         "GITHUB_TOKEN" "AWS_SECRET_ACCESS_KEY" "OPENAI_API_KEY"
                         "GOOGLE_API_KEY" "CLAUDE_API_KEY" "NVIDIA_API_KEY"
                         "NVIDIA_VGPU_DRIVER_URL" "NVIDIA_VGPU_DOWNLOAD_AUTH"
+                        "ESXI_HOST" "ESXI_USER" "ESXI_PASSWORD"
                     )
                     for key_name in "${keys_to_prompt[@]}"; do
                         read -p "Enter value for ${key_name}: " key_value
