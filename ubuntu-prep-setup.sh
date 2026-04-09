@@ -582,7 +582,7 @@ install_vgpu_driver_from_link() {
         ) &
         local spinner_pid=$!
 
-        print_info "Note: The 'Building initial module...' step takes about 4 minutes to complete. Please wait..."
+        print_info "Note: The 'Building initial module...' step takes about 200 seconds / 4 minutes to complete. Please wait..."
         sudo dpkg -i "$downloaded_file_path" || sudo apt-get -f install -y
         
         kill "$spinner_pid" 2>/dev/null || true

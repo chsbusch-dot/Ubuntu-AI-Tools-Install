@@ -1,0 +1,12 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "bashdb",
+            "request": "launch",
+            "name": "Run Integration Tests",
+            "program": "${workspaceFolder}/test-ubuntu-prep.sh",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

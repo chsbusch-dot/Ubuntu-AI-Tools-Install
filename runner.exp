@@ -1,0 +1,80 @@
+set timeout -1
+set guest_user [lindex $argv 0]
+set guest_ip [lindex $argv 1]
+set guest_pass [lindex $argv 2]
+set user_choice [lindex $argv 3]
+set target_user [lindex $argv 4]
+set target_pass [lindex $argv 5]
+set log_file [lindex $argv 6]
+
+log_file -a $log_file
+
+# Bypasses initial SSH login, copies the template to /etc/skel so new users inherit it, then runs the script
+spawn sshpass -p "$guest_pass" ssh -o StrictHostKeyChecking=accept-new -t ${guest_user}@${guest_ip} "echo '$guest_pass' | sudo -S cp /home/${guest_user}/.env.secrets.template /etc/skel/.env.secrets 2>/dev/null; echo '$guest_pass' | sudo -S cp /home/${guest_user}/.env.secrets.template /home/${guest_user}/.env.secrets 2>/dev/null; chmod +x ./ubuntu-prep-setup.sh && ./ubuntu-prep-setup.sh"
+
+set menu_step 0
+
+expect {
+    -ex {[sudo] password for} {
+        send "$guest_pass\r"
+        exp_continue
+    }
+    -ex {Password: } {
+        # This handles the password prompt for `su - "$TARGET_USER"` inside install_openclaw
+        if {$user_choice == "2"} {
+            send "$target_pass\r"
+        } else {
+            send "$guest_pass\r"
+        }
+        exp_continue
+    }
+    -ex {Your choice [1/2]:} {
+        send "$user_choice\r"
+        exp_continue
+    }
+    -ex {Enter the target username} {
+        send "$target_user\r"
+        exp_continue
+    }
+    -ex {New password:} {
+        send "$target_pass\r"
+        exp_continue
+    }
+    -ex {Retype new password:} {
+        send "$target_pass\r"
+        exp_continue
+    }
+    -ex {Full Name} { send "\r"; exp_continue }
+    -ex {Room Number} { send "\r"; exp_continue }
+    -ex {Work Phone} { send "\r"; exp_continue }
+    -ex {Home Phone} { send "\r"; exp_continue }
+    -ex {Other} { send "\r"; exp_continue }
+    -ex {Is the information correct?} { send "y\r"; exp_continue }
+    -ex {Do you want to edit your API keys} {
+        send "n\r"
+        exp_continue
+    }
+    -ex {Your choice: } {
+        if {$menu_step == 0} { 
+            send "1\r" 
+            set menu_step 1 
+        } elseif {$menu_step == 1} { 
+            send "c\r" 
+            set menu_step 2 
+        } elseif {$menu_step == 2} { 
+            send "a\r" 
+            set menu_step 3 
+        } elseif {$menu_step == 3} { 
+            send "i\r" 
+            set menu_step 4 
+        } else {
+            send "c\r"
+        }
+        exp_continue
+    }
+    -ex {proceed anyway?} { send "y\r"; exp_continue }
+    -ex {enable the UFW firewall now?} { send "n\r"; exp_continue }
+    -ex {reboot now?} { send "n\r"; exp_continue }
+    -ex {try again?} { send "n\r"; exp_continue }
+    eof { exit 0 }
+}
