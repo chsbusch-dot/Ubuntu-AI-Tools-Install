@@ -8,17 +8,23 @@ This script automates the setup and preparation of a fresh Ubuntu LTS system. It
 - **Multi-User Support**: Install user-specific tools to your current user or seamlessly create and configure a new dedicated standard user.
 - **System Initialization**: Updates and upgrades all system packages.
 - **Zsh & Oh My Zsh**: Installs Zsh, Oh My Zsh, and essential plugins (`zsh-autosuggestions`, `zsh-syntax-highlighting`, `zsh-history-substring-search`).
-- **Developer Tools**: Installs `git`, `tmux`, `curl`, `wget`, and `micro`.
+- **Developer Tools**: Installs `git`, `tmux`, `curl`, `wget`, `micro`, and the `gcc` compiler.
 - **Python Environment**: Sets up `python3`, `pip`, and `venv` along with necessary build tools.
 - **Docker**: Installs the latest versions of Docker CE, Docker Compose, and configures user permissions.
 - **Node.js Environment**: Installs `nvm` (Node Version Manager) and the latest LTS release of Node.js.
+- **Homebrew**: Installs the Homebrew package manager for Linux.
 - **NVIDIA Stack**:
     - Installs the NVIDIA vGPU guest drivers via direct download URL or Google Drive sharing link.
     - Optionally installs `btop` and `nvtop` for system and GPU monitoring.
     - Installs the CUDA Toolkit, NVIDIA Container Toolkit, and cuDNN.
     - Dynamically detects GPU hardware and filters menu options accordingly.
 - **AI/ML Tools**: Installs the Google Gemini CLI and OpenClaw.
-- **Local LLM Support**: Builds `llama.cpp` from source with CUDA support, installs `ollama` (with optional external network binding), and sets up the `open-webui` Docker container.
+- **Local LLM Support**: 
+    - Builds `llama.cpp` from source with CUDA support or installs `ollama`.
+    - Sets up the `open-webui` Docker container with optional automated daily updates.
+    - Features a **VRAM-aware model recommendation engine** to automatically select and pull the best LLMs for your specific hardware tier.
+    - Installs systemd services to run your LLM backend automatically on boot.
+- **Security & Networking**: Automatically configures the UFW firewall to secure your exposed network services, LLM endpoints, and SSH.
 - **Secure Configuration**: Helps create and manage API keys in a separate `.env.secrets` file.
 - **Pre-flight Checks**: Verifies the script is running on Ubuntu and not as the root user.
 
@@ -32,7 +38,7 @@ This script automates the setup and preparation of a fresh Ubuntu LTS system. It
 To run the script, you can use the following one-liner command. It will download the script from your GitHub repository and execute it directly.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/chsbusch-dot/Ubuntu-AI-Tools-Install/main/ubuntu-prep-setup.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/chsbusch-dot/ubuntu-prep/main/ubuntu-prep-setup.sh)"
 ```
 
 ## Manual Installation

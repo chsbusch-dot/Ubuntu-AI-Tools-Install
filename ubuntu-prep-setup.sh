@@ -44,6 +44,7 @@ EXPOSE_LLAMA_SERVER="n"
 LOAD_DEFAULT_MODEL="n"
 LLM_DEFAULT_MODEL_CHOICE=""
 SELECTED_MODEL_REPO=""
+ENABLE_UFW_AUTOMATICALLY="n"
 
 # --- Helper Functions ---
 
@@ -477,6 +478,13 @@ install_gemini_cli() {
 export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"
 [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"
 exec gemini \"\$@\"
+NODE_BIN=\$(dirname \$(which node 2>/dev/null) 2>/dev/null)
+if [ -x \"\$NODE_BIN/gemini\" ]; then
+    exec \"\$NODE_BIN/gemini\" \"\$@\"
+else
+    # Fallback to npx to guarantee execution if path resolution fails
+    exec npx -y @google/gemini-cli \"\$@\"
+fi
 EOF"
     sudo chmod +x /usr/local/bin/gemini
 
@@ -665,8 +673,8 @@ install_vgpu_driver_from_link() {
                 
                 print_success "vGPU token installed successfully."
                 
-                print_info "Checking vGPU License Status (waiting 5 seconds for service to start)..."
-                sleep 5
+                print_info "Checking vGPU License Status (waiting 10 seconds for service to start)..."
+                sleep 10
                 nvidia-smi -q | grep -i "License Status" || true
                 nvidia-smi -q | grep -i "Feature" || true
             fi
@@ -747,6 +755,12 @@ install_container_toolkit() {
         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
         sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
     sudo apt-get update
+
+    print_info "Auto-detecting latest NVIDIA Container Toolkit version..."
+    local nct_version
+    nct_version=$(apt-cache show nvidia-container-toolkit 2>/dev/null | awk '/^Version:/ {print $2}' | head -n 1)
+    print_success "Latest version available: ${nct_version:-Unknown}"
+
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit
 
     if command -v docker &> /dev/null; then
@@ -771,13 +785,48 @@ install_cudnn() {
     print_info "Installing cuDNN..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zlib1g
     
-    # Dynamically detect the installed CUDA major version to install the matching cuDNN
-    local cuda_major="12" # Fallback if detection fails
+    print_info "Auto-detecting CUDA major version..."
+    local cuda_major="12" # Default fallback
+    
     if [ -f "/usr/local/cuda/bin/nvcc" ]; then
         cuda_major=$(/usr/local/cuda/bin/nvcc --version | sed -n 's/^.*release \([0-9]\+\)\..*$/\1/p')
+    elif command -v nvcc &> /dev/null; then
+        cuda_major=$(nvcc --version | sed -n 's/^.*release \([0-9]\+\)\..*$/\1/p')
+    elif dpkg -l | grep -q "cuda-toolkit-[0-9]"; then
+        cuda_major=$(dpkg -l | awk '/cuda-toolkit-[0-9]+/ {print $2}' | sed -n 's/.*cuda-toolkit-\([0-9]\+\).*/\1/p' | head -n 1)
+    elif command -v nvidia-smi &> /dev/null; then
+        cuda_major=$(nvidia-smi | grep -i "CUDA Version" | sed -n 's/.*CUDA Version: \([0-9]\+\).*/\1/p')
     fi
     
+    if [[ -z "$cuda_major" ]]; then cuda_major="12"; fi
+    
+    print_success "Auto-detected CUDA major version: $cuda_major"
     sudo DEBIAN_FRONTEND=noninteractive apt-get -y install "cudnn9-cuda-${cuda_major}"
+
+    print_info "Auto-detecting cuDNN library path..."
+    sudo ldconfig # Ensure cache is updated after installation
+    local cudnn_so
+    cudnn_so=$(ldconfig -p | grep 'libcudnn.so' | awk '{print $NF}' | head -n 1)
+    if [[ -z "$cudnn_so" ]]; then
+        cudnn_so=$(dpkg -L "cudnn9-cuda-${cuda_major}" 2>/dev/null | grep 'libcudnn.so' | head -n 1)
+    fi
+
+    if [[ -n "$cudnn_so" ]]; then
+        local cudnn_lib_path
+        cudnn_lib_path=$(dirname "$cudnn_so")
+        print_success "cuDNN library path found at: $cudnn_lib_path"
+        
+        local cudnn_env_str="export LD_LIBRARY_PATH=\"$cudnn_lib_path:\$LD_LIBRARY_PATH\""
+        if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.zshrc"; then
+            echo -e "\n# Add cuDNN to LD_LIBRARY_PATH\n${cudnn_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
+        fi
+        if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.bashrc"; then
+            echo -e "\n# Add cuDNN to LD_LIBRARY_PATH\n${cudnn_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
+        fi
+    else
+        echo "⚠️ Could not auto-detect cuDNN library path for LD_LIBRARY_PATH export."
+    fi
+
     POST_INSTALL_ACTIONS+=("reboot")
 }
 
@@ -801,15 +850,40 @@ install_local_llm() {
         sudo apt-get update -qq
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential git cmake ccache libcurl4-openssl-dev libssl-dev
         
-        local cmake_flags="-DGGML_NATIVE=OFF -DLLAMA_CURL=ON"
+        local cmake_flags="-DGGML_NATIVE=OFF"
         local export_cmd=""
 
         if [[ "$install_llamacpp_cuda" == "y" ]]; then
-            echo -e "\n\e[1;33m1. Lookup the Compute Capability of your NVIDIA devices:\e[0m"
-            echo "   CUDA: Lookup Your GPU Compute > https://developer.nvidia.com/cuda-gpus and enter as digits without separator (8.6 -> 86)"
-            read -p "Enter compute capability as integer [86]: " compute_cap
-            compute_cap=${compute_cap:-86}
-            cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
+            print_info "Detecting number of NVIDIA GPUs..."
+            local gpu_count=1
+            local nccl_flag="-DGGML_NCCL=OFF"
+            if command -v nvidia-smi &> /dev/null; then
+                gpu_count=$(nvidia-smi --list-gpus | wc -l)
+            elif command -v lspci &> /dev/null; then
+                gpu_count=$(lspci | grep -i 'nvidia' | grep -iE 'vga|3d|display' | wc -l)
+            fi
+
+            if [[ "$gpu_count" -gt 1 ]]; then
+                print_info "Detected $gpu_count NVIDIA GPUs. Installing NCCL for multi-GPU optimization..."
+                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl-dev
+                nccl_flag=""
+            else
+                print_info "Detected $gpu_count NVIDIA GPU(s). Disabling NCCL to prevent single-GPU/vGPU conflicts."
+            fi
+
+            print_info "Auto-detecting GPU Compute Capability..."
+            local compute_cap="86" # Default fallback
+            if command -v nvidia-smi &> /dev/null; then
+                local detected_cap
+                detected_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '.')
+                if [[ -n "$detected_cap" ]]; then
+                    compute_cap="$detected_cap"
+                    print_success "Auto-detected Compute Capability: $compute_cap"
+                else
+                    print_info "Detection failed. Defaulting to 86."
+                fi
+            fi
+            cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF $nccl_flag -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
             export_cmd="export CUDA_HOME=\"/usr/local/cuda\"; export PATH=\"\$CUDA_HOME/bin:\$PATH\"; export LD_LIBRARY_PATH=\"\$CUDA_HOME/lib64:\$CUDA_HOME/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
             print_info "Cloning and building llama.cpp with CUDA support..."
         else
@@ -822,6 +896,8 @@ install_local_llm() {
                 git clone https://github.com/ggerganov/llama.cpp
             fi
             cd llama.cpp
+            # Clean previous build to prevent CMake caching old NCCL configuration
+            rm -rf build
             $export_cmd
             cmake -B build $cmake_flags
             cmake --build build --config Release -j $(nproc)
@@ -835,8 +911,8 @@ install_local_llm() {
         echo ""
         local hf_args="--model /srv/models/llama.gguf"
         if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "5" ]]; then hf_args="--hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf"; fi
-        if [[ "$LLM_DEFAULT_MODEL_CHOICE" =~ ^[1-4]$ ]]; then hf_args="-hr \"$SELECTED_MODEL_REPO\""; fi
-        if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "6" && -n "$LLAMACPP_MODEL_REPO" ]]; then hf_args="-hr \"$LLAMACPP_MODEL_REPO\""; fi
+        if [[ "$LLM_DEFAULT_MODEL_CHOICE" =~ ^[1-4]$ ]]; then hf_args="--hf-repo \"$SELECTED_MODEL_REPO\""; fi
+        if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "6" && -n "$LLAMACPP_MODEL_REPO" ]]; then hf_args="--hf-repo \"$LLAMACPP_MODEL_REPO\""; fi
 
         if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
             print_info "Pulling selected model..."
@@ -852,7 +928,7 @@ install_local_llm() {
             ) &
             local spinner_pid=$!
 
-            sudo -u "$TARGET_USER" bash -c "$cmd_prefix $hf_args -ngl 0 -n 1 -p \"Ready.\" < /dev/null" >/dev/null 2>&1 || true
+            sudo -u "$TARGET_USER" bash -c "echo '/exit' | $cmd_prefix $hf_args -ngl 0 -n 1 -p \"Ready.\"" >/dev/null 2>&1 || true
 
             kill "$spinner_pid" 2>/dev/null || true
             wait "$spinner_pid" 2>/dev/null || true
@@ -1008,6 +1084,11 @@ EOF"
 
             print_info "NOTE: When you first open Open-WebUI, it will say 'Model not selected'."
             print_info "You must click the dropdown at the top of the screen to select your loaded model."
+            if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
+                print_info "If the model does not appear, verify the connection:"
+                print_info "Go to Profile > Settings > Connections > OpenAI API."
+                print_info "Ensure URL is 'http://127.0.0.1:8081/v1' and click the refresh icon."
+            fi
         fi
     fi
 
@@ -1030,7 +1111,8 @@ EOF"
 
         local ngl_test_args="-ngl 99"
         if [[ "$install_llamacpp_cpu" == "y" ]]; then ngl_test_args="-ngl 0"; fi
-        sudo -u "$TARGET_USER" bash -c "$test_cmd_prefix --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128 $ngl_test_args < /dev/null" > "$tmp_out" 2>&1 || true
+            sudo -u "$TARGET_USER" bash -c "$test_cmd_prefix --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128 $ngl_test_args < /dev/null" > "$tmp_out" 2>&1 || true
+            sudo -u "$TARGET_USER" bash -c "echo '/exit' | timeout 300 $test_cmd_prefix --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128 $ngl_test_args" > "$tmp_out" 2>&1 || true
 
         kill "$spinner_pid" 2>/dev/null || true
         wait "$spinner_pid" 2>/dev/null || true
@@ -1378,6 +1460,17 @@ verify_installations() {
         fi
     fi
 
+    # Verify cuDNN
+    if dpkg -l | grep -E -q 'cudnn|libcudnn'; then
+        services_checked=1
+        print_info "Verifying cuDNN installation..."
+        if ldconfig -p | grep -E -q 'libcudnn'; then
+            print_success "cuDNN shared libraries are loaded and accessible."
+        else
+            echo "⚠️ cuDNN packages are installed, but libraries are not yet in the ldconfig cache. A reboot may be required."
+        fi
+    fi
+
     if [[ $services_checked -eq 0 ]]; then
         print_info "No live background LLM services detected for API verification."
     fi
@@ -1441,15 +1534,8 @@ print_final_summary() {
         print_info "Google Gemini CLI:"
         local gemini_version
         gemini_version=$(gemini --version < /dev/null 2>&1 | head -n 1)
+        gemini_version=$(timeout 5 gemini --version < /dev/null 2>&1 | head -n 1)
         echo "Installed Version: ${gemini_version:-Unknown}"
-        
-        print_info "Testing API connectivity..."
-        local gemini_cmd="[ -f \"$TARGET_USER_HOME/.env.secrets\" ] && source \"$TARGET_USER_HOME/.env.secrets\"; gemini -p \"hi\" --non-interactive < /dev/null"
-        if sudo -u "$TARGET_USER" bash -c "$gemini_cmd" >/dev/null 2>&1; then
-            print_success "API Response Successful. Gemini CLI is fully operational!"
-        else
-            echo "⚠️  API Test Failed. Check your GOOGLE_API_KEY environment variable."
-        fi
         echo ""
     fi
 
@@ -1513,6 +1599,13 @@ print_final_summary() {
         local webui_status
         webui_status=$(sudo docker inspect -f '{{.State.Status}}' open-webui)
         echo "Status: $webui_status"
+        if command -v llama-server &> /dev/null; then
+            echo -e "  \e[1;36m-> How to connect Open-WebUI to llama.cpp:\e[0m"
+            echo "     1. Open WebUI in your browser (e.g., http://localhost:8080)"
+            echo "     2. Go to Profile (bottom left) -> Settings -> Connections"
+            echo "     3. Under 'OpenAI API', verify the URL is 'http://127.0.0.1:8081/v1' and Key is 'sk-llamacpp'"
+            echo "     4. Click the 'Verify Connection' icon. Your model should automatically load!"
+        fi
         echo ""
     fi
 
@@ -1740,8 +1833,21 @@ main() {
             local master_index=${UI_TO_MASTER[$choice]}
             
             if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 ]]; then
-                echo -e "\nOption $((choice)) is already installed." && sleep 1
-            else
+                if [[ $master_index -eq 14 ]]; then
+                    echo -e "\nLocal LLM Stack is already installed."
+                    read -p "Do you want to reconfigure/switch your LLM backend? [y/N]: " reconf
+                    if [[ "$reconf" == "y" || "$reconf" == "Y" ]]; then
+                        MASTER_INSTALLED_STATE[$master_index]=0
+                    else
+                        continue
+                    fi
+                else
+                    echo -e "\nOption $((choice)) is already installed." && sleep 1
+                    continue
+                fi
+            fi
+
+            if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 0 ]]; then
                 # Sub-menu for Local LLM Stack (index 14)
                 if [[ $master_index -eq 14 && ${MASTER_SELECTIONS[14]} -eq 0 ]]; then
                     LLM_BACKEND_CHOICE=""
@@ -1776,6 +1882,9 @@ main() {
                 AUTO_UPDATE_MODEL="n"
                 LLM_DEFAULT_MODEL_CHOICE=""
                 INSTALL_LLAMA_SERVICE="n"
+                ENABLE_UFW_AUTOMATICALLY="n"
+                PURGE_OLLAMA_MODELS="n"
+                PURGE_HF_MODELS="n"
                 
                 local opt_options=(
                     "Install open Web UI?"
@@ -1788,6 +1897,23 @@ main() {
                 if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
                     opt_options+=("Install llama.cpp model as system service?")
                     opt_options+=("Open llama server to network?")
+                fi
+                opt_options+=("Enable UFW firewall (automatically opens SSH and selected ports)?")
+
+                local has_ollama_models=false
+                local has_hf_models=false
+                
+                if command -v ollama &> /dev/null && ollama list 2>/dev/null | tail -n +2 | grep -q .; then
+                    has_ollama_models=true
+                fi
+                if ls -1qA "$TARGET_USER_HOME/.cache/huggingface/hub" 2>/dev/null | grep -q "^models--"; then
+                    has_hf_models=true
+                fi
+
+                if [[ ("$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda") && "$has_ollama_models" == true ]]; then
+                    opt_options+=("Purge existing Ollama models to free up disk space?")
+                elif [[ "$LLM_BACKEND_CHOICE" == "ollama" && "$has_hf_models" == true ]]; then
+                    opt_options+=("Purge existing llama.cpp/HuggingFace models to free up space?")
                 fi
 
                 local opt_selections=()
@@ -1804,11 +1930,13 @@ main() {
                         fi
                     done
                     echo "---------------------------------"
-                    echo "Use numbers [1-${#opt_options[@]}] to toggle. Press 'c' to confirm."
+                    echo "Use numbers [1-${#opt_options[@]}] to toggle. Press 'a' to select all, 'c' to confirm."
                     read -p "Your choice: " opt_choice
                     if [[ "$opt_choice" =~ ^[0-9]+$ ]] && [ "$opt_choice" -ge 1 ] && [ "$opt_choice" -le ${#opt_options[@]} ]; then
                         local idx=$((opt_choice - 1))
                         opt_selections[$idx]=$((1 - opt_selections[$idx]))
+                    elif [[ "$opt_choice" == "a" || "$opt_choice" == "A" ]]; then
+                        for ((i=0; i<${#opt_options[@]}; i++)); do opt_selections[$i]=1; done
                     elif [[ "$opt_choice" == "c" || "$opt_choice" == "C" ]]; then
                         break
                     else
@@ -1816,15 +1944,22 @@ main() {
                     fi
                 done
 
-                [[ ${opt_selections[0]} -eq 1 ]] && INSTALL_OPENWEBUI="y"
-                [[ ${opt_selections[1]} -eq 1 ]] && EXPOSE_LLM_ENGINE="y"
-                [[ ${opt_selections[2]} -eq 1 ]] && LOAD_DEFAULT_MODEL="y"
-                [[ ${opt_selections[3]} -eq 1 ]] && AUTO_UPDATE_MODEL="y"
-                [[ ${opt_selections[4]} -eq 1 ]] && INSTALL_WATCHTOWER="y"
-                if [[ "$LLM_BACKEND_CHOICE" == "llama_cpu" || "$LLM_BACKEND_CHOICE" == "llama_cuda" ]]; then
-                    [[ ${opt_selections[5]} -eq 1 ]] && INSTALL_LLAMA_SERVICE="y"
-                    [[ ${opt_selections[6]} -eq 1 ]] && EXPOSE_LLAMA_SERVER="y"
-                fi
+                for i in "${!opt_options[@]}"; do
+                    if [[ ${opt_selections[$i]} -eq 1 ]]; then
+                        case "${opt_options[$i]}" in
+                            "Install open Web UI?") INSTALL_OPENWEBUI="y" ;;
+                            "Expose "*on*0.0.0.0?) EXPOSE_LLM_ENGINE="y" ;;
+                            "Load default model?") LOAD_DEFAULT_MODEL="y" ;;
+                            "Auto-update selected model daily at 4 AM?") AUTO_UPDATE_MODEL="y" ;;
+                            "Auto-update Open-WebUI via Watchtower (Daily at 4 AM)?") INSTALL_WATCHTOWER="y" ;;
+                            "Install llama.cpp model as system service?") INSTALL_LLAMA_SERVICE="y" ;;
+                            "Open llama server to network?") EXPOSE_LLAMA_SERVER="y" ;;
+                            "Enable UFW firewall (automatically opens SSH and selected ports)?") ENABLE_UFW_AUTOMATICALLY="y" ;;
+                            "Purge existing Ollama models to free up disk space?") PURGE_OLLAMA_MODELS="y" ;;
+                            "Purge existing llama.cpp/HuggingFace models to free up space?") PURGE_HF_MODELS="y" ;;
+                        esac
+                    fi
+                done
 
                 if [[ "$INSTALL_WATCHTOWER" == "y" && "$INSTALL_OPENWEBUI" == "n" ]]; then
                     INSTALL_OPENWEBUI="y"
@@ -1875,36 +2010,69 @@ main() {
                     esac
                     
                     local m_chat="" m_code="" m_moe="" m_vision=""
-                    case "$vram_tier" in
-                        8)  m_chat="unsloth/Qwen3.5-9B-it-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-9B-GGUF"
-                            m_moe="unsloth/Qwen3.5-MoE-4B-GGUF"
-                            m_vision="unsloth/gemma-4-E4B-it-GGUF" ;;
-                        16) m_chat="unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-14B-GGUF"
-                            m_moe="unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF"
-                            m_vision="unsloth/gemma-4-E4B-it-GGUF" ;;
-                        24) m_chat="unsloth/Mistral-Small-3.2-24B-Instruct-v1-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-27B-GGUF"
-                            m_moe="unsloth/Qwen3.5-35B-A3B-GGUF"
-                            m_vision="unsloth/Qwen3.5-VL-27B-GGUF" ;;
-                        32) m_chat="unsloth/gemma-4-31B-it-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-35B-GGUF"
-                            m_moe="unsloth/gemma-4-26B-A4B-it-GGUF"
-                            m_vision="unsloth/gemma-4-31B-it-GGUF" ;;
-                        48) m_chat="unsloth/Llama-4-70B-Instruct-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-70B-GGUF"
-                            m_moe="unsloth/DeepSeek-V3.1-Distill-Qwen-70B-GGUF"
-                            m_vision="unsloth/Qwen3.5-VL-72B-GGUF" ;;
-                        72) m_chat="unsloth/DeepSeek-V3.2-Exp-120B-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-70B-GGUF"
-                            m_moe="unsloth/Qwen3.5-122B-A10B-GGUF"
-                            m_vision="unsloth/InternVL3-78B-GGUF" ;;
-                        96) m_chat="unsloth/DeepSeek-V3.2-Exp-120B-GGUF"
-                            m_code="unsloth/Qwen3.5-Coder-120B-GGUF"
-                            m_moe="unsloth/Qwen3.5-122B-A10B-GGUF"
-                            m_vision="unsloth/Llama-3.2-90B-Vision-Instruct-GGUF" ;;
-                    esac
+                    if [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then
+                        case "$vram_tier" in
+                            8)  m_chat="llama3.1:8b"
+                                m_code="qwen2.5-coder:7b"
+                                m_moe="gemma2:9b"
+                                m_vision="llava:7b" ;;
+                            16) m_chat="gpt-oss:20b"
+                                m_code="qwen3:14b"
+                                m_moe="ministral-3:14b"
+                                m_vision="llava:13b" ;;
+                            24) m_chat="qwen3:30b"
+                                m_code="glm-4.7-flash"
+                                m_moe="gemma4:26b"
+                                m_vision="llava:34b" ;;
+                            32) m_chat="gemma4:31b"
+                                m_code="glm-4.7-flash"
+                                m_moe="gemma4:26b"
+                                m_vision="qwen3-vl:32b" ;;
+                            48) m_chat="llama3.1:70b"
+                                m_code="qwen2.5:72b"
+                                m_moe="nemotron-cascade-2"
+                                m_vision="qwen3-vl:32b" ;;
+                            72) m_chat="qwen3-next:80b"
+                                m_code="qwen2.5:72b"
+                                m_moe="command-r-plus"
+                                m_vision="qwen3-vl:32b" ;;
+                            96) m_chat="gpt-oss:120b"
+                                m_code="qwen3:235b-q2"
+                                m_moe="nemotron-3-super"
+                                m_vision="qwen3-vl:32b" ;;
+                        esac
+                    else
+                        case "$vram_tier" in
+                            8)  m_chat="unsloth/Qwen3.5-9B-it-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-9B-GGUF"
+                                m_moe="unsloth/Qwen3.5-MoE-4B-GGUF"
+                                m_vision="unsloth/gemma-4-E4B-it-GGUF" ;;
+                            16) m_chat="unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-14B-GGUF"
+                                m_moe="unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF"
+                                m_vision="unsloth/gemma-4-E4B-it-GGUF" ;;
+                            24) m_chat="unsloth/Mistral-Small-3.2-24B-Instruct-v1-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-27B-GGUF"
+                                m_moe="unsloth/Qwen3.5-35B-A3B-GGUF"
+                                m_vision="unsloth/Qwen3.5-VL-27B-GGUF" ;;
+                            32) m_chat="unsloth/gemma-4-31B-it-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-35B-GGUF"
+                                m_moe="unsloth/gemma-4-26B-A4B-it-GGUF"
+                                m_vision="unsloth/gemma-4-31B-it-GGUF" ;;
+                            48) m_chat="unsloth/Llama-4-70B-Instruct-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-70B-GGUF"
+                                m_moe="unsloth/DeepSeek-V3.1-Distill-Qwen-70B-GGUF"
+                                m_vision="unsloth/Qwen3.5-VL-72B-GGUF" ;;
+                            72) m_chat="unsloth/DeepSeek-V3.2-Exp-120B-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-70B-GGUF"
+                                m_moe="unsloth/Qwen3.5-122B-A10B-GGUF"
+                                m_vision="unsloth/InternVL3-78B-GGUF" ;;
+                            96) m_chat="unsloth/DeepSeek-V3.2-Exp-120B-GGUF"
+                                m_code="unsloth/Qwen3.5-Coder-120B-GGUF"
+                                m_moe="unsloth/Qwen3.5-122B-A10B-GGUF"
+                                m_vision="unsloth/Llama-3.2-90B-Vision-Instruct-GGUF" ;;
+                        esac
+                    fi
                     
                     echo -e "\n\e[1;36mSelect a default model to load (${vram_tier}GB Tier):\e[0m"
                     echo "  1. General Chat:    $m_chat"
@@ -1927,7 +2095,7 @@ main() {
                         echo -e "\n\e[1;36mThe llama-cli and llama-server tools can automatically download GGUF models from Hugging Face if you provide the repository name like this:"
                         echo -e "  username/repository:quantization"
                         echo -e "then load like this:"
-                        echo -e "  ./llama-cli -hr username/repository:quantization -p \"Your prompt here\"\e[0m\n"
+                        echo -e "  ./llama-cli --hf-repo username/repository:quantization -p \"Your prompt here\"\e[0m\n"
                         read -p "Enter HuggingFace string (e.g., 'raincandy-u/TinyStories-656K-Q8_0-GGUF:Q8_0'): " LLAMACPP_MODEL_REPO
                     fi
                 fi
@@ -2203,7 +2371,7 @@ main() {
             exposed_msg+="  - Open-WebUI is at IP:8080\n"
         fi
         
-        if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* || -n "$exposed_msg" ]]; then
+        if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* || -n "$exposed_msg" || "$ENABLE_UFW_AUTOMATICALLY" == "y" ]]; then
             echo -e "\n\e[1;33mIMPORTANT: Firewall rules have been configured, but UFW is NOT enabled by default.\e[0m"
             echo -e "\e[1;36mThe following UFW rules have been prepared:\e[0m"
             echo "  - ALLOW 22/tcp (SSH)"
@@ -2213,7 +2381,15 @@ main() {
             fi
             if [[ "$INSTALL_OPENWEBUI" == "y" ]]; then echo "  - ALLOW 8080/tcp (Open-WebUI)"; fi
             echo ""
-            read -p "Do you want to enable the UFW firewall now? (WARNING: Ensure SSH access is allowed if remote) [y/N]: " enable_ufw < /dev/tty
+            
+            local enable_ufw="n"
+            if [[ "$ENABLE_UFW_AUTOMATICALLY" == "y" ]]; then
+                print_info "Auto-enabling UFW firewall as selected in the configuration menu..."
+                enable_ufw="y"
+            else
+                read -p "Do you want to enable the UFW firewall now? (WARNING: Ensure SSH access is allowed if remote) [y/N]: " enable_ufw < /dev/tty
+            fi
+            
             if [[ "$enable_ufw" == "y" || "$enable_ufw" == "Y" ]]; then
                 sudo ufw default deny incoming &>/dev/null || true
                 sudo ufw allow 22/tcp &>/dev/null || true
