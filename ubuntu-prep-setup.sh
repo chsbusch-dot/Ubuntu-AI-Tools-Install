@@ -101,7 +101,7 @@ get_model_recommendations() {
                 REC_MODEL_VISION="unsloth/gemma-4-E4B-it-GGUF" ;;
             16) REC_MODEL_CHAT="unsloth/gemma-4-E4B-it-GGUF"
                 REC_MODEL_CODE="Qwen/Qwen2.5-Coder-14B-Instruct-GGUF"
-                REC_MODEL_MOE="TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF"
+                REC_MODEL_MOE="unsloth/Mixtral-8x7B-Instruct-v0.1-GGUF"
                 REC_MODEL_VISION="cjpais/llava-v1.6-vicuna-13b-gguf" ;;
             24) REC_MODEL_CHAT="unsloth/gemma-4-26B-A4B-it-GGUF"
                 REC_MODEL_CODE="Qwen/Qwen2.5-Coder-32B-Instruct-GGUF"
@@ -238,7 +238,7 @@ determine_target_user() {
             print_info "Target user '$TARGET_USER' already exists."
         else
             print_info "Creating user '$TARGET_USER'..."
-            sudo adduser --gecos "" "$TARGET_USER"
+            sudo adduser "$TARGET_USER"
             print_success "Standard user '$TARGET_USER' created successfully."
         fi
         # Get home directory path correctly, even for non-standard home dirs
@@ -280,40 +280,36 @@ configure_timezone() {
         fi
     fi
 
-    while true; do
-        read -p "Enter timezone (Continent/City) or press Enter to keep default [$tz]: " user_tz
+    read -p "Enter timezone (Continent/City) or press Enter to keep default [$tz]: " user_tz
 
-        local attempt_tz="$tz"
-        if [[ -n "$user_tz" ]]; then
-            attempt_tz="$user_tz"
-        fi
+    if [[ -n "$user_tz" ]]; then
+        tz="$user_tz"
+    fi
 
-        print_info "Setting timezone to '$attempt_tz' and enabling NTP..."
-        if sudo timedatectl set-timezone "$attempt_tz" 2>/dev/null; then
-            tz="$attempt_tz"
-            sudo timedatectl set-ntp true 2>/dev/null || true
-            print_success "Timezone set to $tz and NTP synced."
-            export GLOBAL_SYSTEM_TIMEZONE="$tz"
-            
-            # If the secrets file already exists, update or append it
-            if sudo test -f "$env_file"; then
-                if sudo grep -q "SYSTEM_TIMEZONE" "$env_file"; then
-                    sudo -u "$TARGET_USER" sed -i "s|^.*export SYSTEM_TIMEZONE=.*|export SYSTEM_TIMEZONE=\"$tz\"|" "$env_file"
-                else
-                    echo "export SYSTEM_TIMEZONE=\"$tz\"" | sudo -u "$TARGET_USER" tee -a "$env_file" > /dev/null
-                fi
+    print_info "Setting timezone to '$tz' and enabling NTP..."
+    if sudo timedatectl set-timezone "$tz" 2>/dev/null; then
+        sudo timedatectl set-ntp true 2>/dev/null || true
+        print_success "Timezone set to $tz and NTP synced."
+        export GLOBAL_SYSTEM_TIMEZONE="$tz"
+        
+        # If the secrets file already exists, update or append it
+        if sudo test -f "$env_file"; then
+            if sudo grep -q "SYSTEM_TIMEZONE" "$env_file"; then
+                sudo -u "$TARGET_USER" sed -i "s|^.*export SYSTEM_TIMEZONE=.*|export SYSTEM_TIMEZONE=\"$tz\"|" "$env_file"
+            else
+                echo "export SYSTEM_TIMEZONE=\"$tz\"" | sudo -u "$TARGET_USER" tee -a "$env_file" > /dev/null
             fi
-            break
-        else
-            echo -e "❌ \e[1;31mInvalid timezone: '$attempt_tz'.\e[0m Please enter a valid format like 'America/Los_Angeles'."
         fi
-    done
+    else
+        echo -e "❌ \e[1;31mFailed to set timezone.\e[0m Ensure it is a valid format like 'America/Los_Angeles'."
+        export GLOBAL_SYSTEM_TIMEZONE="America/Los_Angeles"
+    fi
 }
 
 # Function to configure API keys for either bash or zsh
 setup_env_secrets() {
     print_header "Configuring API Keys"
-    if [ ! -f "$TARGET_USER_HOME/.env.secrets" ]; then
+    if ! sudo test -f "$TARGET_USER_HOME/.env.secrets"; then
         print_info "Creating ~/.env.secrets template for API keys..."
         cat <<EOF | sudo -u "$TARGET_USER" tee "$TARGET_USER_HOME/.env.secrets" > /dev/null
 # This file is for storing secrets and API keys.
@@ -345,7 +341,7 @@ EOF
         sudo chmod 600 "$TARGET_USER_HOME/.env.secrets"
     fi
 
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q ".env.secrets" "$TARGET_USER_HOME/.bashrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q ".env.secrets" "$TARGET_USER_HOME/.bashrc"; then
         echo -e '\n# Source secrets file if it exists\nif [[ -f ~/.env.secrets ]]; then\n  source ~/.env.secrets\nfi' | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
 
@@ -368,11 +364,7 @@ EOF
                     for key_name in "${keys_to_prompt[@]}"; do
                         read -p "Enter value for ${key_name}: " key_value
                         if [[ -n "$key_value" ]]; then
-                            # Escape double quotes to prevent breaking the bash string syntax
-                            local safe_val="${key_value//\"/\\\"}"
-                            # Disable the placeholder and safely append the value to avoid sed delimiter injection
-                            sudo -u "$TARGET_USER" sed -i "s|^# export ${key_name}=.*|# (Configured) ${key_name}|" "$TARGET_USER_HOME/.env.secrets"
-                            echo "export ${key_name}=\"${safe_val}\"" | sudo -u "$TARGET_USER" tee -a "$TARGET_USER_HOME/.env.secrets" > /dev/null
+                            sudo -u "$TARGET_USER" sed -i "s|# export ${key_name}=.*|export ${key_name}=\"${key_value}\"|" "$TARGET_USER_HOME/.env.secrets"
                         fi
                     done
                     print_success "API keys have been saved to $TARGET_USER_HOME/.env.secrets."
@@ -403,7 +395,7 @@ install_zsh() {
     print_info "Installing packages: zsh, tmux, micro"
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zsh tmux micro
 
-    if [ ! -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
+    if ! sudo test -d "$TARGET_USER_HOME/.oh-my-zsh"; then
         print_info "Installing Oh My Zsh..."
         # We must cd to the target user's home directory first. Otherwise, the installer starts in the current user's
         # home directory and throws a permission error when it tries to cd back to its starting path at the end.
@@ -420,15 +412,15 @@ install_zsh() {
 
     print_info "Cloning Zsh plugins..."
     # zsh-autosuggestions
-    if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
+    if ! sudo test -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"; then
         sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
     fi
     # zsh-syntax-highlighting
-    if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
+    if ! sudo test -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"; then
         sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
     fi
     # zsh-history-substring-search
-    if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-history-substring-search" ]; then
+    if ! sudo test -d "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"; then
         sudo -u "$TARGET_USER" -H git clone https://github.com/zsh-users/zsh-history-substring-search "${ZSH_CUSTOM}/plugins/zsh-history-substring-search"
     fi
 
@@ -568,11 +560,11 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 EOF
 )
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q 'NVM_DIR' "$TARGET_USER_HOME/.zshrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.zshrc" && ! sudo grep -q 'NVM_DIR' "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding NVM configuration to ~/.zshrc"
         echo -e "\n# NVM Configuration\n${nvm_config_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q 'NVM_DIR' "$TARGET_USER_HOME/.bashrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q 'NVM_DIR' "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding NVM configuration to ~/.bashrc"
         echo -e "\n# NVM Configuration\n${nvm_config_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
@@ -602,10 +594,10 @@ install_homebrew() {
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 EOF
 )
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q 'linuxbrew' "$TARGET_USER_HOME/.zshrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.zshrc" && ! sudo grep -q 'linuxbrew' "$TARGET_USER_HOME/.zshrc"; then
         echo -e "\n${brew_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q 'linuxbrew' "$TARGET_USER_HOME/.bashrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q 'linuxbrew' "$TARGET_USER_HOME/.bashrc"; then
         echo -e "\n${brew_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
     print_success "Homebrew installed."
@@ -854,13 +846,9 @@ install_cuda_toolkit() {
     print_info "Installing CUDA..."
     # Make CUDA repo installation dynamic based on Ubuntu version
     UBUNTU_VERSION=$(lsb_release -sr | tr -d '.')
-    wget "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-keyring_1.1-1_all.deb" || echo "⚠️ Failed to fetch CUDA keyring."
-    if [ -f cuda-keyring_1.1-1_all.deb ]; then
-        sudo dpkg -i cuda-keyring_1.1-1_all.deb || true
-        rm cuda-keyring_1.1-1_all.deb
-    else
-        echo "❌ Could not find cuda-keyring_1.1-1_all.deb. CUDA install may fail."
-    fi
+    wget "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-keyring_1.1-1_all.deb"
+    sudo dpkg -i cuda-keyring_1.1-1_all.deb
+    rm cuda-keyring_1.1-1_all.deb
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get -y install cuda-toolkit
 
@@ -874,11 +862,11 @@ export PATH="$CUDA_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:$LD_LIBRARY_PATH"
 EOF
 )
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.zshrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.zshrc" && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.zshrc"; then
         print_info "Adding CUDA path to ~/.zshrc"
         echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.bashrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q 'CUDA_HOME' "$TARGET_USER_HOME/.bashrc"; then
         print_info "Adding CUDA path to ~/.bashrc"
         echo -e "\n# Add NVIDIA CUDA Toolkit to path\n${cuda_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
@@ -969,10 +957,10 @@ install_cudnn() {
         print_success "cuDNN library path found at: $cudnn_lib_path"
         
         local cudnn_env_str="export LD_LIBRARY_PATH=\"$cudnn_lib_path:\$LD_LIBRARY_PATH\""
-        if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.zshrc"; then
+        if sudo test -f "$TARGET_USER_HOME/.zshrc" && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.zshrc"; then
             echo -e "\n# Add cuDNN to LD_LIBRARY_PATH\n${cudnn_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
         fi
-        if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.bashrc"; then
+        if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q "$cudnn_lib_path" "$TARGET_USER_HOME/.bashrc"; then
             echo -e "\n# Add cuDNN to LD_LIBRARY_PATH\n${cudnn_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
         fi
     else
@@ -1043,6 +1031,7 @@ install_local_llm() {
         fi
 
         sudo -u "$TARGET_USER" bash -c "
+            mkdir -p \"$TARGET_USER_HOME/llama.cpp/models-user\"
             cd \"$TARGET_USER_HOME\"
             if [ ! -d llama.cpp ]; then
                 git clone https://github.com/ggerganov/llama.cpp
@@ -1069,12 +1058,12 @@ install_local_llm() {
         if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
             while true; do
                 print_info "Pulling and verifying selected model (this will show native download progress)..."
-                local cmd_prefix="export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\"; llama-cli"
+                local secrets_source="[ -f \"$TARGET_USER_HOME/.env.secrets\" ] && source \"$TARGET_USER_HOME/.env.secrets\";"
+                local env_prefix="$secrets_source export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
                 
                 local pull_status=0
-                # Run without background spinner to show native 0-100% download progress
-                # Safely trap the error code to prevent 'set -e' script termination
-                sudo -u "$TARGET_USER" bash -c "echo '/exit' | $cmd_prefix $hf_args -ngl 0 -n 1 -p \"System Ready.\"" || pull_status=$?
+                # Force the CLI to exit immediately by piping '/exit' directly into it
+                sudo -u "$TARGET_USER" bash -c "$env_prefix echo '/exit' | llama-cli $hf_args -ngl 0 -n 1 -p \"System Ready.\" < /dev/null" || pull_status=$?
 
                 echo ""
 
@@ -1164,20 +1153,38 @@ EOF"
         echo ""
         if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
             while true; do
-                print_info "Downloading and running default model (this will show native download progress)..."
+                print_info "Downloading and running default model..."
+
+                (
+                    local elapsed=0
+                    while true; do
+                        sleep 10
+                        elapsed=$((elapsed + 10))
+                        echo -e "\r\e[1;36mℹ️ Still downloading model... ($elapsed seconds elapsed)\e[0m"
+                    done
+                ) &
+                local spinner_pid=$!
+
+                local pull_tmp
+                pull_tmp=$(mktemp)
                 local ollama_status=0
 
-                if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "5" ]]; then ollama run tinydolphin "Once upon a time," < /dev/null || ollama_status=$?
-                elif [[ "$LLM_DEFAULT_MODEL_CHOICE" =~ ^[1-4]$ ]]; then ollama run "$SELECTED_MODEL_REPO" "Hello, system check." < /dev/null || ollama_status=$?
-                elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "6" && -n "$OLLAMA_PULL_MODEL" ]]; then ollama pull "$OLLAMA_PULL_MODEL" < /dev/null || ollama_status=$?
+                if [[ "$LLM_DEFAULT_MODEL_CHOICE" == "5" ]]; then ollama run tinydolphin "Once upon a time," < /dev/null > "$pull_tmp" 2>&1; ollama_status=$?
+                elif [[ "$LLM_DEFAULT_MODEL_CHOICE" =~ ^[1-4]$ ]]; then ollama run "$SELECTED_MODEL_REPO" "Hello, system check." < /dev/null > "$pull_tmp" 2>&1; ollama_status=$?
+                elif [[ "$LLM_DEFAULT_MODEL_CHOICE" == "6" && -n "$OLLAMA_PULL_MODEL" ]]; then ollama pull "$OLLAMA_PULL_MODEL" < /dev/null > "$pull_tmp" 2>&1; ollama_status=$?
                 fi
 
+                kill "$spinner_pid" 2>/dev/null || true
+                wait "$spinner_pid" 2>/dev/null || true
                 echo ""
 
                 if [[ $ollama_status -eq 0 ]]; then
                     print_success "Model successfully downloaded and verified."
+                    rm -f "$pull_tmp"
                     break
                 else
+                    cat "$pull_tmp"
+                    rm -f "$pull_tmp"
                     echo -e "\n❌ \e[1;31mFailed to download or load the Ollama model.\e[0m"
                     read -p "Enter a valid Ollama model (e.g., 'llama3.2') or type 'skip': " fallback_repo
                     if [[ "$fallback_repo" == "skip" || "$fallback_repo" == "Skip" ]]; then
@@ -1272,53 +1279,53 @@ EOF"
     fi
 
     if [[ "$install_llamacpp_cpu" == "y" || "$install_llamacpp_cuda" == "y" ]]; then
-        echo ""
-        print_info "Running llama.cpp performance test... (This may take a minute to download the test model)"
-        local secrets_source="[ -f \"$TARGET_USER_HOME/.env.secrets\" ] && source \"$TARGET_USER_HOME/.env.secrets\";"
-        local test_cmd_prefix="$secrets_source export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\"; llama-cli"
-        local tmp_out
-        tmp_out=$(mktemp)
-        
-        local ngl_test_args="-ngl 99"
-        if [[ "$install_llamacpp_cpu" == "y" ]]; then ngl_test_args="-ngl 0"; fi
+        if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
+            echo ""
+            print_info "Running llama-bench performance test on the loaded model..."
+            local secrets_source="[ -f \"$TARGET_USER_HOME/.env.secrets\" ] && source \"$TARGET_USER_HOME/.env.secrets\";"
+            local env_prefix="$secrets_source export LD_LIBRARY_PATH=\"/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:\$LD_LIBRARY_PATH\";"
+            local tmp_out
+            tmp_out=$(mktemp)
+            
+            local ngl_test_args="-ngl 99"
+            if [[ "$install_llamacpp_cpu" == "y" ]]; then ngl_test_args="-ngl 0"; fi
 
-        sudo -u "$TARGET_USER" bash -c "$test_cmd_prefix --hf-repo raincandy-u/TinyStories-656K-Q8_0-GGUF --hf-file tinystories-656k-q8_0.gguf -p \"Once upon a time,\" -n 128 $ngl_test_args < /dev/null" > "$tmp_out" 2>&1 &
-        local cli_pid=$!
+            sudo -u "$TARGET_USER" bash -c "$env_prefix llama-bench $hf_args $ngl_test_args" > "$tmp_out" 2>&1 &
+            local cli_pid=$!
 
-        (
-            local elapsed=0
-            while true; do
-                if grep -qEi 'Generation:.*t/s|eval time.*tokens per second' "$tmp_out" 2>/dev/null; then
-                    break
-                fi
-                if ! kill -0 $cli_pid 2>/dev/null; then
-                    break
-                fi
-                sleep 5
-                elapsed=$((elapsed + 5))
-                echo -e "\r\e[1;36mℹ️ Still running inference test... ($elapsed seconds elapsed)\e[0m"
-            done
-            sudo pkill -P $cli_pid 2>/dev/null || true
-            sudo kill $cli_pid 2>/dev/null || true
-            sudo pkill -f "llama-cli.*TinyStories" 2>/dev/null || true
-        ) &
-        local spinner_pid=$!
+            (
+                local elapsed=0
+                while true; do
+                    if grep -qEi 'tg128.*±' "$tmp_out" 2>/dev/null; then
+                        break
+                    fi
+                    if ! kill -0 $cli_pid 2>/dev/null; then
+                        break
+                    fi
+                    sleep 5
+                    elapsed=$((elapsed + 5))
+                    echo -e "\r\e[1;36mℹ️ Still running llama-bench... ($elapsed seconds elapsed)\e[0m"
+                done
+                sudo pkill -P $cli_pid 2>/dev/null || true
+                sudo kill $cli_pid 2>/dev/null || true
+                sudo pkill -f "llama-bench" 2>/dev/null || true
+            ) &
+            local spinner_pid=$!
 
-        wait "$spinner_pid" 2>/dev/null || true
+            wait "$spinner_pid" 2>/dev/null || true
 
-        local prompt_speed=$(grep -Eo '[0-9.]+ tokens per second|Prompt: [0-9.]+ t/s' "$tmp_out" | grep -Eo '[0-9.]+' | head -n 1)
-        local gen_speed=$(grep -Eo '[0-9.]+ tokens per second|Generation: [0-9.]+ t/s' "$tmp_out" | grep -Eo '[0-9.]+' | tail -n 1)
+            local prompt_speed=$(grep -i "pp512" "$tmp_out" | awk -F'|' '{print $8}' | awk '{print $1}')
+            local gen_speed=$(grep -i "tg128" "$tmp_out" | awk -F'|' '{print $8}' | awk '{print $1}')
 
-        if [[ -n "$prompt_speed" && -n "$gen_speed" ]]; then
-            print_success "llama.cpp test complete: [ Prompt: ${prompt_speed} t/s | Generation: ${gen_speed} t/s ]"
-            if [[ "$LLM_DEFAULT_MODEL_CHOICE" != "5" ]]; then
-                print_info "Cleaning up test model..."
-                sudo -u "$TARGET_USER" rm -rf "$TARGET_USER_HOME/.cache/huggingface/hub/models--raincandy-u--TinyStories-656K-Q8_0-GGUF"
+            echo ""
+            if [[ -n "$prompt_speed" && -n "$gen_speed" ]]; then
+                print_success "llama-bench test complete: [ Prompt: ${prompt_speed} t/s | Generation: ${gen_speed} t/s ]"
+            else
+                print_success "llama-bench test complete."
+                grep "|" "$tmp_out" || true
             fi
-        else
-            print_success "llama.cpp test complete."
+            rm -f "$tmp_out"
         fi
-        rm -f "$tmp_out"
 
         echo ""
         if [[ "$INSTALL_LLAMA_SERVICE" == "y" ]]; then
@@ -1379,10 +1386,10 @@ if [ -z "$XDG_RUNTIME_DIR" ]; then
 fi
 EOF
 )
-    if [ -f "$TARGET_USER_HOME/.zshrc" ] && ! sudo grep -q 'DBUS_SESSION_BUS_ADDRESS' "$TARGET_USER_HOME/.zshrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.zshrc" && ! sudo grep -q 'DBUS_SESSION_BUS_ADDRESS' "$TARGET_USER_HOME/.zshrc"; then
         echo -e "\n${systemd_env_str}" | sudo tee -a "$TARGET_USER_HOME/.zshrc" > /dev/null
     fi
-    if [ -f "$TARGET_USER_HOME/.bashrc" ] && ! sudo grep -q 'DBUS_SESSION_BUS_ADDRESS' "$TARGET_USER_HOME/.bashrc"; then
+    if sudo test -f "$TARGET_USER_HOME/.bashrc" && ! sudo grep -q 'DBUS_SESSION_BUS_ADDRESS' "$TARGET_USER_HOME/.bashrc"; then
         echo -e "\n${systemd_env_str}" | sudo tee -a "$TARGET_USER_HOME/.bashrc" > /dev/null
     fi
 
@@ -1458,7 +1465,7 @@ EOF
     sudo rm -f "/etc/sudoers.d/99-temp-$TARGET_USER"
 
     local openclaw_config="$TARGET_USER_HOME/.openclaw/openclaw.json"
-    if [ -f "$openclaw_config" ]; then
+    if sudo test -f "$openclaw_config"; then
         print_info "Updating OpenClaw gateway configuration..."
         # Use jq to safely update the JSON config file
         local tmp_json_file
@@ -1479,7 +1486,7 @@ EOF
         print_success "UFW rule for OpenClaw ($OPENCLAW_PORT) configured."
     fi
 
-    if [ -f "$openclaw_config" ]; then
+    if sudo test -f "$openclaw_config"; then
         local sec_options=(
             "Disable mDNS (LAN discovery broadcasts)"
             "Enable Docker Sandboxing (Highly Recommended)"
@@ -1562,7 +1569,7 @@ check_installations() {
     # Note: selections[0] is for 'update_system' and is not pre-checked.
 
     # 1. Zsh (index 1)
-    if [ -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
+    if sudo test -d "$TARGET_USER_HOME/.oh-my-zsh"; then
         print_info "Found existing Oh My Zsh installation."
         MASTER_INSTALLED_STATE[1]=1
     fi
@@ -1645,12 +1652,12 @@ check_installations() {
     if ! command -v ollama &> /dev/null; then llm_installed=0; fi
     if ! sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^open-webui$'; then llm_installed=0; fi
     if [[ $llm_installed -eq 1 ]]; then
-        print_info "Found existing Local LLM Stack (Ollama, llama.cpp, Open-WebUI, LibreChat)."
+        print_info "Found existing Local LLM Stack (Ollama, llama.cpp, Open-WebUI)."
         MASTER_INSTALLED_STATE[14]=1
     fi
 
     # 15. OpenClaw (index 15)
-    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
+    if sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
         print_info "Found existing OpenClaw installation."
         MASTER_INSTALLED_STATE[15]=1
     fi
@@ -1727,10 +1734,10 @@ verify_installations() {
     fi
 
     # Verify OpenClaw
-    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
+    if sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
         services_checked=1
         local oc_port="18789"
-        if [ -f "$TARGET_USER_HOME/.openclaw/openclaw.json" ]; then oc_port=$(sudo jq -r '.gateway.port // 18789' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null); fi
+        if sudo test -f "$TARGET_USER_HOME/.openclaw/openclaw.json"; then oc_port=$(sudo jq -r '.gateway.port // 18789' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null); fi
         print_info "Waiting for OpenClaw Gateway to initialize (timeout 60s)..."
         local oc_up=0
         for i in {1..30}; do
@@ -1788,7 +1795,7 @@ print_final_summary() {
     local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
     local brew_cmd="[ -f /home/linuxbrew/.linuxbrew/bin/brew ] && eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\""
 
-    if [ -d "$TARGET_USER_HOME/.oh-my-zsh" ]; then
+    if sudo test -d "$TARGET_USER_HOME/.oh-my-zsh"; then
         print_info "Zsh / Oh My Zsh:"
         zsh --version || echo "Installed"
         echo ""
@@ -1910,7 +1917,7 @@ EOF
         echo ""
     fi
 
-    if [ -f "$TARGET_USER_HOME/.local/bin/openclaw" ]; then
+    if sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
         print_info "OpenClaw:"
         sudo -u "$TARGET_USER" bash -c "export PATH=\"$TARGET_USER_HOME/.local/bin:\$PATH\"; openclaw --version 2>/dev/null || echo 'Installed'"
         echo ""
@@ -1956,9 +1963,9 @@ EOF
     elif [[ $path_changed -eq 1 ]]; then
         # Determine the correct rc file based on the user's default shell
         local rc_file=""
-        if [ -f "$TARGET_USER_HOME/.zshrc" ]; then
+        if sudo test -f "$TARGET_USER_HOME/.zshrc"; then
             rc_file="$TARGET_USER_HOME/.zshrc"
-        elif [ -f "$TARGET_USER_HOME/.bashrc" ]; then
+        elif sudo test -f "$TARGET_USER_HOME/.bashrc"; then
             rc_file="$TARGET_USER_HOME/.bashrc"
         fi
         echo -e "\e[1;33mTo activate newly installed commands for '$TARGET_USER' (like nvm, node, gemini), they must either:\e[0m"
@@ -2044,7 +2051,7 @@ main() {
         "Install gcc compiler"
         "Install NVIDIA Container Toolkit"
         "Install cuDNN"
-        "Install Local LLM Support (Ollama, llama.cpp, Open-WebUI, LibreChat)"
+        "Install Local LLM Support (Ollama, llama.cpp, Open-WebUI)"
         "Install OpenClaw"
     )
 
@@ -2085,7 +2092,7 @@ main() {
     local GOAL_OPTIONS=(
         "OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
         "VGPU Setup (NVIDIA Driver, CUDA, Container Toolkit, cuDNN)"
-        "Local LLM Setup (Ollama, llama.cpp, Open-WebUI, LibreChat)"
+        "Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
     )
 
     while true; do
@@ -2196,7 +2203,6 @@ main() {
                 
                 local opt_options=(
                     "Install open Web UI?"
-                    "Install LibreChat?"
                     "Allow external connections to ${LLM_BACKEND_CHOICE} (bind 0.0.0.0)?"
                     "Load default model?"
                 )
@@ -2239,7 +2245,6 @@ main() {
                     if [[ ${opt_selections[$i]} -eq 1 ]]; then
                         case "${opt_options[$i]}" in
                             "Install open Web UI?") INSTALL_OPENWEBUI="y" ;;
-                            "Install LibreChat?") INSTALL_LIBRECHAT="y" ;;
                             "Allow external connections to "*0.0.0.0?) EXPOSE_LLM_ENGINE="y" ;;
                             "Load default model?") LOAD_DEFAULT_MODEL="y" ;;
                             "Install llama.cpp model as system service?") INSTALL_LLAMA_SERVICE="y" ;;
@@ -2247,16 +2252,6 @@ main() {
                         esac
                     fi
                 done
-
-        if [[ "$INSTALL_LIBRECHAT" == "y" ]]; then
-            echo ""
-            read -p "Do you want to run LibreChat on port 8083 instead of the default 3080? [y/N]: " lc_port_choice
-            if [[ "$lc_port_choice" == "y" || "$lc_port_choice" == "Y" ]]; then
-                LIBRECHAT_PORT="8083"
-            else
-                LIBRECHAT_PORT="3080"
-            fi
-        fi
 
                 if [[ "$LOAD_DEFAULT_MODEL" == "y" ]]; then
                     local detected_ram_vram=0
@@ -2314,7 +2309,7 @@ main() {
                                     fi
                                     OLLAMA_PULL_MODEL="$raw_input"
                                     echo ""
-                                    read -n 1 -s -r -t 5 -p "Press any key to continue (or wait 5s)..." || true
+                                    read -n 1 -s -r -t 5 -p "Press any key to continue (or wait 5s)..."
                                     echo ""
                                     break
                                 done
@@ -2386,7 +2381,7 @@ main() {
                                     fi
                                     LLAMACPP_MODEL_REPO="$raw_input"
                                     echo ""
-                                    read -n 1 -s -r -t 5 -p "Press any key to continue (or wait 5s)..." || true
+                                    read -n 1 -s -r -t 5 -p "Press any key to continue (or wait 5s)..."
                                     echo ""
                                     break
                                 done
@@ -2535,7 +2530,7 @@ main() {
                 # Dependency logic for Local LLM Stack (index 14)
                 if [[ $master_index -eq 14 && ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
                     local auto_selected=""
-            if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" || "$INSTALL_LIBRECHAT" == "y" || "$INSTALL_LIBRECHAT" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
+                    if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then MASTER_SELECTIONS[3]=1; ensure_active_index 3; auto_selected+="Docker, "; fi
                     if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then MASTER_SELECTIONS[10]=1; ensure_active_index 10; auto_selected+="CUDA, "; fi
                     if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" || "$LLM_BACKEND_CHOICE" == "llama_cuda") && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[12]} -eq 0 && ${MASTER_INSTALLED_STATE[12]} -eq 0 ]]; then MASTER_SELECTIONS[12]=1; ensure_active_index 12; auto_selected+="NVIDIA CTK, "; fi
                     if [[ -n "$auto_selected" ]]; then
@@ -2589,10 +2584,10 @@ main() {
 
     # 3. Local LLM Stack (14) -> Various
     if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
-        if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y" || "$INSTALL_LIBRECHAT" == "y" || "$INSTALL_LIBRECHAT" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
+        if [[ ("$INSTALL_OPENWEBUI" == "y" || "$INSTALL_OPENWEBUI" == "Y") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
             MASTER_SELECTIONS[3]=1
             validation_warnings=1
-            echo -e "\n\e[1;33m[Validation Fix]\e[0m Docker auto-added as it is required by Open-WebUI/LibreChat."
+            echo -e "\n\e[1;33m[Validation Fix]\e[0m Docker auto-added as it is required by Open-WebUI."
         fi
         if [[ "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then
             MASTER_SELECTIONS[10]=1
@@ -2616,8 +2611,7 @@ main() {
     local required_gb=5 # Base requirement for general system updates and basic tools
     if [[ ${MASTER_SELECTIONS[10]} -eq 1 ]]; then required_gb=$((required_gb + 5)); fi # CUDA Toolkit
     if [[ ${MASTER_SELECTIONS[12]} -eq 1 ]]; then required_gb=$((required_gb + 2)); fi # NVIDIA Container Toolkit & Docker usage
-    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then required_gb=$((required_gb + 10)); fi # LLM Models and UI images
-    if [[ "$INSTALL_LIBRECHAT" == "y" || "$INSTALL_LIBRECHAT" == "Y" ]]; then required_gb=$((required_gb + 2)); fi # LibreChat Docker images
+    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then required_gb=$((required_gb + 10)); fi # LLM Models and Open-WebUI image
     
     local free_space_mb
     free_space_mb=$(df -m "$TARGET_USER_HOME" | awk 'NR==2 {print $4}')
@@ -2687,9 +2681,9 @@ main() {
         local EXPOSE_SELECTIONS=()
 
         local current_oc_port="${OPENCLAW_PORT:-18789}"
-        if [ -f "$TARGET_USER_HOME/.openclaw/openclaw.json" ]; then current_oc_port=$(sudo jq -r '.gateway.port // 18789' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null); fi
+        if sudo test -f "$TARGET_USER_HOME/.openclaw/openclaw.json"; then current_oc_port=$(sudo jq -r '.gateway.port // 18789' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null); fi
 
-        if [ -f "$TARGET_USER_HOME/.openclaw/openclaw.json" ] && [[ "$EXPOSE_OPENCLAW" != "y" ]]; then
+        if sudo test -f "$TARGET_USER_HOME/.openclaw/openclaw.json" && [[ "$EXPOSE_OPENCLAW" != "y" ]]; then
             EXPOSE_OPTIONS+=("OpenClaw Gateway (Port $current_oc_port)")
             EXPOSE_KEYS+=("openclaw")
             EXPOSE_SELECTIONS+=(0)
@@ -2759,9 +2753,6 @@ main() {
         if [[ "$INSTALL_OPENWEBUI" == "y" ]]; then
             exposed_msg+="  - Open-WebUI is at IP:8081\n"
         fi
-        if [[ "$INSTALL_LIBRECHAT" == "y" ]]; then
-            exposed_msg+="  - LibreChat is at IP:$LIBRECHAT_PORT\n"
-        fi
         
         if [[ "${POST_INSTALL_ACTIONS[*]}" == *"ufw"* || -n "$exposed_msg" || "$ENABLE_UFW_AUTOMATICALLY" == "y" ]]; then
             echo -e "\n\e[1;33mIMPORTANT: Firewall rules have been configured, but UFW is NOT enabled by default.\e[0m"
@@ -2772,7 +2763,6 @@ main() {
                 if [[ "$LLM_BACKEND_CHOICE" == "ollama" ]]; then echo "  - ALLOW 11434/tcp (Ollama API)"; else echo "  - ALLOW 8080/tcp (llama.cpp Server)"; fi
             fi
             if [[ "$INSTALL_OPENWEBUI" == "y" ]]; then echo "  - ALLOW 8081/tcp (Open-WebUI)"; fi
-            if [[ "$INSTALL_LIBRECHAT" == "y" ]]; then echo "  - ALLOW $LIBRECHAT_PORT/tcp (LibreChat)"; fi
             echo ""
             
             local enable_ufw="n"
@@ -2786,7 +2776,6 @@ main() {
             if [[ "$enable_ufw" == "y" || "$enable_ufw" == "Y" ]]; then
                 sudo ufw default deny incoming &>/dev/null || true
                 sudo ufw allow 22/tcp &>/dev/null || true
-                if [[ "$INSTALL_LIBRECHAT" == "y" ]]; then sudo ufw allow $LIBRECHAT_PORT/tcp &>/dev/null || true; fi
                 sudo ufw --force enable
                 print_success "UFW firewall enabled."
             else
@@ -2806,7 +2795,7 @@ main() {
         else
             echo -e "\e[1;33mPlease run the following command to activate your new environment:\e[0m"
         fi
-        if [ -f "$TARGET_USER_HOME/.zshrc" ] && [[ "$SHELL" == *"zsh"* || "${MASTER_SELECTIONS[1]}" == "1" || "${MASTER_INSTALLED_STATE[1]}" == "1" ]]; then
+        if sudo test -f "$TARGET_USER_HOME/.zshrc" && [[ "$SHELL" == *"zsh"* || "${MASTER_SELECTIONS[1]}" == "1" || "${MASTER_INSTALLED_STATE[1]}" == "1" ]]; then
             echo -e "\e[1;36msource ~/.zshrc\e[0m"
         else
             echo -e "\e[1;36msource ~/.bashrc\e[0m"

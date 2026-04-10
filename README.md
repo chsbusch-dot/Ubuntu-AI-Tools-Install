@@ -1,6 +1,10 @@
-# Ubuntu Local AI, Ollama, Llama.cpp, LibreChat & OpenClaw Prep and Installation Script
+# Ubuntu Local AI, Ollama, Llama.cpp, LibreChat & OpenClaw with Nvidia vGPU idriver & token and latest CUDA Prep and Installation Script
 
 This script automates the setup and configuration of a fresh Ubuntu LTS system to run Ollama or Llama.cpp with CUDA, automatically selects and loads the best model for your hardware, and configures powerful Chat UIs (Open-WebUI and LibreChat). It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use AI development environment.
+
+It will download and install the Nvidia Enterprise vGPU drivers and the License token automatically. Then install latest CUDA and CUDNN.
+
+At theend you have fully congured Ollama, Lama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
 
 ## Interactive Menus
 
