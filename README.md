@@ -1,6 +1,6 @@
-# Ubuntu Prep Script
+# Ubuntu Local AI, Ollama, LLama.cpp & Openclaw Prep script
 
-This script automates the setup and preparation of a fresh Ubuntu LTS system. It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use development environment.
+This script automates the setup and preparation of a fresh Ubuntu LTS system. It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use AI development environment.
 
 ## Features
 
@@ -16,9 +16,9 @@ This script automates the setup and preparation of a fresh Ubuntu LTS system. It
 - **NVIDIA Stack**:
     - Installs the NVIDIA vGPU guest drivers via direct download URL or Google Drive sharing link.
     - Optionally installs `btop` and `nvtop` for system and GPU monitoring.
-    - Installs the CUDA Toolkit, NVIDIA Container Toolkit, and cuDNN.
-    - Dynamically detects GPU hardware and filters menu options accordingly.
-- **AI/ML Tools**: Installs the Google Gemini CLI and OpenClaw.
+    - Installs the latest CUDA, NVIDIA Container Toolkit, and cuDNN.
+    - Dynamically detects GPU hardware and filters menu options accordingly (Multi-GPU compile, compuute verion)
+- **AI/ML Tools**: Installs Google Gemini CLI and OpenClaw.
 - **Local LLM Support**: 
     - Builds `llama.cpp` from source with CUDA support or installs `ollama`.
     - Sets up the `open-webui` Docker container with optional automated daily updates.
@@ -64,6 +64,30 @@ chmod +x ubuntu-prep-setup.sh
 ### API Keys
 
 The script will create a `~/.env.secrets` file to store your API keys securely. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.bashrc` and `.zshrc` but is ignored by Git to prevent accidental exposure.
+
+nano ~/.env.secrets
+
+Paste:
+
+# --- API Key Placeholders ---
+# Uncomment and fill in the values for the services you use.
+
+# export GITHUB_TOKEN="your_github_token"
+# export AWS_SECRET_ACCESS_KEY="your_aws_secret"
+# export OPENAI_API_KEY="your_openai_key"
+# export GOOGLE_API_KEY="your_google_api_key"
+# export CLAUDE_API_KEY="your_claude_key"
+# export NVIDIA_API_KEY="your_nvidia_api_key"
+# export NVIDIA_NGC_API_KEY="your_nvidia_api_key"
+# export HF_TOKEN="hf_your_token_here"
+# export FIRECRAWL_API_KEY=""
+# export TAVILI_API_KEY=""
+# export NVIDIA_VGPU_DRIVER_URL="ftp://192.168.1.31/shared/.../nvidia.deb"
+# export NVIDIA_VGPU_TOKEN_URL="ftp://192.168.1.31/shared/.../token.tok"
+# export NVIDIA_VGPU_DOWNLOAD_AUTH="admin:password" # Works for FTP, HTTP Basic Auth, and SMB
+# export ESXI_HOST="192.168.1.100"
+# export ESXI_USER="root"
+# export ESXI_PASSWORD="your_esxi_password"
 
 ## License
 
