@@ -1,10 +1,10 @@
-# Ubuntu Local AI, Ollama, Llama.cpp, LibreChat & OpenClaw with Nvidia vGPU idriver & token and latest CUDA Prep and Installation Script
+# Ubuntu Local AI, Ollama, Llama.cpp CUDA, LibreChat & OpenClaw with Nvidia vGPU driver & token and latest CUDA Prep and Installation Script
 
 This script automates the setup and configuration of a fresh Ubuntu LTS system to run Ollama or Llama.cpp with CUDA, automatically selects and loads the best model for your hardware, and configures powerful Chat UIs (Open-WebUI and LibreChat). It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use AI development environment.
 
 It will download and install the Nvidia Enterprise vGPU drivers and the License token automatically. Then install latest CUDA and CUDNN.
 
-At theend you have fully congured Ollama, Lama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
+At the end you have fully configured Ollama or Llama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
 
 ## Interactive Menus
 
@@ -41,7 +41,7 @@ Press 'i' to install selected, or 'q' to quit.
 
 **Hardware-Aware Configuration:**
 The script dynamically detects your system resources. For example:
-- If no NVIDIA GPU is detected, the vGPU and CUDA options automatically disable themselves to prevent broken configurations.
+- If no NVIDIA GPU is detected, the vGPU and CUDA options automatically disable themselves to prevent broken configurations. You need to rbring the driver and token.
 - The **VRAM-Aware LLM Selection** measures your GPU VRAM (or System RAM) and automatically recommends models tailored exactly to your memory limits!
 - A built-in disk space checker warns you if your selected options exceed your partition's available storage.
 
@@ -63,9 +63,9 @@ The script dynamically detects your system resources. For example:
     - Dynamically detects GPU hardware and filters menu options accordingly (Multi-GPU compile, compuute verion)
 - **AI/ML Tools**: Installs Google Gemini CLI and OpenClaw.
 - **Local LLM Support**: 
-    - Builds `llama.cpp` from source with CUDA support or installs `ollama`.
+    - Builds `llama.cpp` from source with CUDA support or installs `ollama`. Single or Multi-GPU comppile. 
     - Sets up **Open-WebUI** and **LibreChat** via Docker with optional automated daily updates and seamless backend integration (auto-generates `librechat.yaml` to connect local APIs).
-    - Features a **VRAM-aware model recommendation engine** to automatically select and pull the best LLMs for your specific hardware tier.
+    - Features a **VRAM-aware model recommendation engine** to automatically select and pull the best LLMs for your specific hardware tier. Also Check here: https://runthisllm.com
     - Automatically configures **CORS (Cross-Origin Resource Sharing)** for both Ollama (`OLLAMA_ORIGINS`) and llama.cpp (`--cors`) so external frontends can securely connect without browser policy errors.
     - Bulletproof model downloading with native progress bars and automatic error-handling/retries for Hugging Face and Ollama repositories.
     - Installs systemd services to run your LLM backend automatically on boot.
@@ -138,6 +138,26 @@ Example:
 # export OLLAMA_ALLOWED_ORIGINS="https://chat.yourdomain.com,http://localhost:8081"
 # export SYSTEM_TIMEZONE="America/Los_Angeles"
 ```
+
+## Feedback &Commercial Use
+Let me know if you find this useful.
+Let me know if I should add other packages.
+If you use this at work, please expense a sponsor payment by clicking the sponsor button above.. 
+
+Here are some I am considering:
+
+Tool	    Stars	    Category	Why
+Qdrant	        29K	    Vector DB	Every RAG tool needs one. docker run qdrant/qdrant
+SearXNG	        27K	    Web Search	Gives AI agents private web search, used by Open-WebUI
+n8n	            183K	Automation	Self-hosted Zapier with native AI agent nodes
+AnythingLLM	    54K	    RAG/UI	    Instant doc chat on top of Ollama, no extra setup
+vLLM	        75K	    Inference	Production-grade multi-user GPU inference, OpenAI-compatible
+faster-whisper	14K	    STT	        pip install speech-to-text, used by Open-WebUI STT
+Kokoro TTS	    HF	    TTS	        Near-ElevenLabs quality, 82M params, Docker wrapper available
+Aider	        42K	    Coding	    pip install aider-chat — terminal AI pair programmer
+OpenHands	    70K	    Agent	    Autonomous coding agent, sandboxed Docker
+ComfyUI	        108K	Image	    Node-graph Stable Diffusion/FLUX, GPU required
+Tabby	        32K	    Coding	    Self-hosted GitHub Copilot server for VS Code/JetBrains
 
 ## License
 
