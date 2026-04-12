@@ -484,6 +484,24 @@ install_base_dependencies() {
 
     print_success "Base dependencies are present."
 }
+
+# Network download wrapper — retries up to 3 times on failure with a 5-second delay.
+# Drop-in replacement for curl: passes all arguments through unchanged.
+# Do NOT use for health-check probes or JSON API subshell calls.
+curl_with_retry() {
+    local n=0
+    local max=3
+    until curl "$@"; do
+        ((n++))
+        if [[ $n -ge $max ]]; then
+            echo "❌ curl failed after $max attempts." >&2
+            return 1
+        fi
+        echo "⚠️  curl attempt $n/$max failed, retrying in 5s..." >&2
+        sleep 5
+    done
+}
+
 # --- Installation Functions ---
 
 # Function to determine the target user for the installation
@@ -760,7 +778,7 @@ install_zsh() {
     fi
 
     print_info "Setting Zsh as the default shell for the current user..."
-    sudo chsh -s "$(which zsh)" "$TARGET_USER"
+    sudo chsh -s "$(command -v zsh)" "$TARGET_USER"
 
     # Define Zsh custom plugins directory
     local ZSH_CUSTOM="${TARGET_USER_HOME}/.oh-my-zsh/custom"
@@ -866,7 +884,7 @@ install_docker() {
     print_info "Setting up Docker's official GPG key and repository..."
     sudo apt-get update
     sudo install -m 0755 -d /etc/apt/keyrings # ca-certificates and curl are installed as base dependencies
-    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    curl_with_retry -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc >/dev/null
     sudo chmod a+r /etc/apt/keyrings/docker.asc
 
     # Add the repository to Apt sources
@@ -978,7 +996,7 @@ install_gemini_cli() {
 export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"
 [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"
 exec gemini \"\$@\"
-NODE_BIN=\$(dirname \$(which node 2>/dev/null) 2>/dev/null)
+NODE_BIN=\$(dirname \$(command -v node 2>/dev/null) 2>/dev/null)
 if [ -x \"\$NODE_BIN/gemini\" ]; then
     exec \"\$NODE_BIN/gemini\" \"\$@\"
 else
@@ -1052,12 +1070,12 @@ install_vgpu_driver_from_link() {
             confirm_token=$(curl -sc "${tmp_dir}/cookies.txt" "https://drive.google.com/uc?export=download&id=${file_id}" | grep -o 'confirm=[^&"'\'' ]*' | sed 's/confirm=//' | head -n 1)
 
             if [[ -n "$confirm_token" ]]; then
-                curl -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}&confirm=${confirm_token}" || dl_failed=true
+                curl_with_retry -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}&confirm=${confirm_token}" || dl_failed=true
             else
-                curl -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}" || dl_failed=true
+                curl_with_retry -L -# -b "${tmp_dir}/cookies.txt" -o "$downloaded_file_path" "https://drive.google.com/uc?export=download&id=${file_id}" || dl_failed=true
             fi
         else
-            local curl_cmd=(curl -L -# -o "$downloaded_file_path")
+            local curl_cmd=(curl_with_retry -L -# -o "$downloaded_file_path")
             if [[ -n "$download_auth" ]]; then
                 curl_cmd+=("-u" "$download_auth")
             fi
@@ -1151,12 +1169,12 @@ install_vgpu_driver_from_link() {
             confirm_token=$(curl -sc "${tmp_dir}/cookies.txt" "https://drive.google.com/uc?export=download&id=${file_id}" | grep -o 'confirm=[^&"'\'' ]*' | sed 's/confirm=//' | head -n 1)
 
             if [[ -n "$confirm_token" ]]; then
-                curl -L -# -b "${tmp_dir}/cookies.txt" -o "$token_file_path" "https://drive.google.com/uc?export=download&id=${file_id}&confirm=${confirm_token}" || tok_failed=true
+                curl_with_retry -L -# -b "${tmp_dir}/cookies.txt" -o "$token_file_path" "https://drive.google.com/uc?export=download&id=${file_id}&confirm=${confirm_token}" || tok_failed=true
             else
-                curl -L -# -b "${tmp_dir}/cookies.txt" -o "$token_file_path" "https://drive.google.com/uc?export=download&id=${file_id}" || tok_failed=true
+                curl_with_retry -L -# -b "${tmp_dir}/cookies.txt" -o "$token_file_path" "https://drive.google.com/uc?export=download&id=${file_id}" || tok_failed=true
             fi
         else
-            local curl_cmd=(curl -L -# -o "$token_file_path")
+            local curl_cmd=(curl_with_retry -L -# -o "$token_file_path")
             if [[ -n "$download_auth" ]]; then
                 curl_cmd+=("-u" "$download_auth")
             fi
@@ -1290,8 +1308,8 @@ install_gcc() {
 # 12. Install NVIDIA Container Toolkit
 install_container_toolkit() {
     print_info "Installing NVIDIA Container Toolkit..."
-    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
+    curl_with_retry -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl_with_retry -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' |
         sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
     sudo apt-get update
@@ -1635,7 +1653,11 @@ detect_local_ai_components() {
     local openclaw_binary=false
     local openclaw_config=false
     local openclaw_partial=false
-    if sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then openclaw_binary=true; fi
+    # Binary lives in the NVM bin directory, not ~/.local/bin
+    local oc_bin_detected
+    oc_bin_detected=$(sudo -u "$TARGET_USER" bash -c \
+        "export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; command -v openclaw 2>/dev/null || true" 2>/dev/null || true)
+    if [[ -n "$oc_bin_detected" ]] || sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then openclaw_binary=true; fi
     if sudo test -d "$TARGET_USER_HOME/.openclaw"; then openclaw_config=true; fi
     if [[ "$openclaw_binary" == true || "$openclaw_config" == true ]]; then openclaw_partial=true; fi
     OPENCLAW_COMPONENT_STATUS=$(derive_component_status "$([[ "$openclaw_binary" == true && "$openclaw_config" == true ]] && echo true || echo false)" "$openclaw_partial")
@@ -2408,7 +2430,7 @@ configure_openclaw_selection() {
 
     echo ""
     echo -e "\e[1;33mWARNING: Do not expose OpenClaw on a VPS connected directly to the internet without proper security.\e[0m"
-    read -p "Do you want to expose OpenClaw to the network (bind to 0.0.0.0)? [y/N]: " expose_oc
+    read -p "Do you want to expose OpenClaw to the LAN (bind to all interfaces)? [y/N]: " expose_oc
     if [[ "$expose_oc" == "y" || "$expose_oc" == "Y" ]]; then
         EXPOSE_OPENCLAW="y"
     fi
@@ -2716,7 +2738,7 @@ SERVICEEOF
 
     if [[ "$install_ollama" == "y" || "$install_ollama" == "Y" ]]; then
         print_info "Installing Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
+        curl_with_retry -fsSL https://ollama.com/install.sh | sh
 
         if [[ "$EXPOSE_LLM_ENGINE" == "y" ]]; then
             print_info "Configuring Ollama for external access..."
@@ -2927,8 +2949,11 @@ EOF"
         fi
 
         print_info "Configuring LibreChat docker-compose override..."
+        local lc_uid lc_gid
+        lc_uid=$(id -u "$TARGET_USER")
+        lc_gid=$(id -g "$TARGET_USER")
+
         sudo -u "$TARGET_USER" bash -c "cat <<EOF > \"$TARGET_USER_HOME/LibreChat/docker-compose.override.yml\"
-version: '3.4'
 services:
   api:
     extra_hosts:
@@ -2940,18 +2965,20 @@ services:
 EOF"
 
         print_info "Starting LibreChat container (this may take a few minutes to download images)..."
-        sudo bash -c "cd \"$TARGET_USER_HOME/LibreChat\" && docker compose up -d"
+        sudo bash -c "cd \"$TARGET_USER_HOME/LibreChat\" && UID=$lc_uid GID=$lc_gid docker compose up -d"
         print_success "LibreChat installed and running on port $LIBRECHAT_PORT."
 
         print_info "Creating LibreChat auto-update script..."
         sudo bash -c "cat <<EOF > /usr/local/bin/update-librechat.sh
 #!/bin/bash
 cd \"$TARGET_USER_HOME/LibreChat\"
+UID_VAL=\$(id -u \"$TARGET_USER\")
+GID_VAL=\$(id -g \"$TARGET_USER\")
 sudo docker compose down
 sudo docker images -a | grep \"librechat\" | awk '{print \\\$3}' | xargs -r sudo docker rmi || true
 sudo -u \"$TARGET_USER\" git pull
 sudo docker compose pull
-sudo docker compose up -d
+UID=\$UID_VAL GID=\$GID_VAL sudo docker compose up -d
 EOF"
         sudo chmod +x /usr/local/bin/update-librechat.sh
 
@@ -3130,11 +3157,16 @@ EOF
         # Use jq to safely update the JSON config file
         local tmp_json_file
         tmp_json_file=$(sudo mktemp)
-        local bind_ip="127.0.0.1"
-        if [[ "$EXPOSE_OPENCLAW" == "y" ]]; then bind_ip="0.0.0.0"; fi
-        sudo jq ".gateway.bind = \"$bind_ip\" | .gateway.port = $OPENCLAW_PORT | .gateway.controlUi.enabled = true" "$openclaw_config" | sudo tee "$tmp_json_file" >/dev/null &&
-            sudo mv "$tmp_json_file" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
-        print_success "OpenClaw gateway configured to bind to $bind_ip:$OPENCLAW_PORT."
+        # gateway.bind takes a mode string, not an IP address
+        local bind_mode="loopback"
+        if [[ "$EXPOSE_OPENCLAW" == "y" ]]; then bind_mode="lan"; fi
+        local _jq_out
+        _jq_out=$(sudo jq ".gateway.bind = \"$bind_mode\" | .gateway.port = $OPENCLAW_PORT | .gateway.controlUi.enabled = true" "$openclaw_config") || { echo "⚠️  jq filter failed — config not updated." >&2; }
+        if [[ -n "$_jq_out" ]] && echo "$_jq_out" | jq empty 2>/dev/null; then
+            echo "$_jq_out" | sudo tee "$tmp_json_file" >/dev/null &&
+                sudo mv "$tmp_json_file" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
+        fi
+        print_success "OpenClaw gateway configured (bind: $bind_mode, port: $OPENCLAW_PORT)."
     else
         echo "⚠️  OpenClaw config file not found at ${openclaw_config}. Skipping gateway configuration."
     fi
@@ -3150,12 +3182,11 @@ EOF
         local sec_options=(
             "Disable mDNS (LAN discovery broadcasts)"
             "Enable Docker Sandboxing (Highly Recommended)"
-            "Restrict High-Risk Tools (Require manual approval for exec, shell, filesystem_delete)"
-            "Set DM Policy to 'locked' (Private access only)"
+            "Restrict Exec Tools (require approval; block shell & filesystem_delete)"
             "Lock Configuration Permissions (chmod 700/600)"
             "Run Deep Security Audit now"
         )
-        local sec_selections=(1 1 1 1 1 1)
+        local sec_selections=(1 1 1 1 1)
 
         while true; do
             clear
@@ -3189,27 +3220,34 @@ EOF
 
         if [[ ${sec_selections[0]} -eq 1 ]]; then jq_filters="$jq_filters | .discovery.mdns.mode = \"off\""; fi
         if [[ ${sec_selections[1]} -eq 1 ]]; then jq_filters="$jq_filters | .agents.defaults.sandbox.mode = \"all\""; fi
-        if [[ ${sec_selections[2]} -eq 1 ]]; then jq_filters="$jq_filters | .agents.defaults.tools.exec.requireApproval = true | .agents.defaults.tools.shell.requireApproval = true | .agents.defaults.tools.filesystem_delete.requireApproval = true"; fi
-        if [[ ${sec_selections[3]} -eq 1 ]]; then jq_filters="$jq_filters | .channels.defaults.dmPolicy = \"locked\""; fi
+        # tools.exec.ask = "always" prompts before every exec tool call
+        # tools.deny blocks shell and filesystem_delete outright
+        if [[ ${sec_selections[2]} -eq 1 ]]; then jq_filters="$jq_filters | .tools.exec.ask = \"always\" | .tools.deny = ((.tools.deny // []) + [\"shell\", \"filesystem_delete\"] | unique)"; fi
 
         if [ "$jq_filters" != "." ]; then
             print_info "Applying OpenClaw security configuration..."
-            sudo jq "$jq_filters" "$openclaw_config" | sudo tee "$tmp_json_file2" >/dev/null &&
-                sudo mv "$tmp_json_file2" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
-
-            print_info "Restarting OpenClaw daemon to apply security settings..."
-            sudo -u "$TARGET_USER" bash -c "export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"; systemctl --user restart openclaw.service 2>/dev/null || true"
-            print_success "OpenClaw security settings applied."
+            local validated_json
+            validated_json=$(sudo jq "$jq_filters" "$openclaw_config") || {
+                echo "⚠️  jq filter failed — security config not written."
+                validated_json=""
+            }
+            if [[ -n "$validated_json" ]]; then
+                echo "$validated_json" | sudo tee "$tmp_json_file2" >/dev/null &&
+                    sudo mv "$tmp_json_file2" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
+                print_info "Restarting OpenClaw daemon to apply security settings..."
+                sudo -u "$TARGET_USER" bash -c "export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"; systemctl --user restart openclaw.service 2>/dev/null || true"
+                print_success "OpenClaw security settings applied."
+            fi
         fi
 
-        if [[ ${sec_selections[4]} -eq 1 ]]; then
+        if [[ ${sec_selections[3]} -eq 1 ]]; then
             print_info "Locking OpenClaw configuration permissions..."
             sudo chmod 700 "$TARGET_USER_HOME/.openclaw"
             sudo chmod 600 "$openclaw_config"
             print_success "Permissions locked (700 for .openclaw, 600 for openclaw.json)."
         fi
 
-        if [[ ${sec_selections[5]} -eq 1 ]]; then
+        if [[ ${sec_selections[4]} -eq 1 ]]; then
             print_info "Running OpenClaw Deep Security Audit..."
             sudo -u "$TARGET_USER" bash -c "export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; export PATH=\"$TARGET_USER_HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:\$PATH\"; openclaw security audit --deep" || echo -e "⚠️ \e[1;33mAudit returned warnings/errors, please review.\e[0m"
             echo ""
@@ -3450,7 +3488,7 @@ print_final_summary() {
 
     if command -v gemini &>/dev/null; then
         print_info "Google Gemini CLI:"
-        echo "Installed at $(which gemini)"
+        echo "Installed at $(command -v gemini)"
         echo ""
     fi
 
@@ -3505,7 +3543,7 @@ print_final_summary() {
 
     if command -v llama-server &>/dev/null; then
         print_info "llama.cpp:"
-        echo "llama-server installed at $(which llama-server)"
+        echo "llama-server installed at $(command -v llama-server)"
         if systemctl is-active --quiet llama-server 2>/dev/null; then
             echo -e "  \e[1;36m-> To test your live API server from the terminal, run:\e[0m"
             cat <<'EOF'
@@ -3559,9 +3597,13 @@ EOF
         echo ""
     fi
 
-    if sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
+    local oc_status_bin
+    oc_status_bin=$(sudo -u "$TARGET_USER" bash -c \
+        "export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; command -v openclaw 2>/dev/null || true" 2>/dev/null || true)
+    if [[ -n "$oc_status_bin" ]] || sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
         print_info "OpenClaw:"
-        sudo -u "$TARGET_USER" bash -c "export PATH=\"$TARGET_USER_HOME/.local/bin:\$PATH\"; openclaw --version 2>/dev/null || echo 'Installed'"
+        sudo -u "$TARGET_USER" bash -c \
+            "export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; openclaw --version 2>/dev/null || echo 'Installed'"
         echo ""
     fi
 
@@ -3720,8 +3762,11 @@ main() {
         install_openclaw
     )
 
-    local MASTER_SELECTIONS=(1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
-    local MASTER_INSTALLED_STATE=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+    local MENU_ITEM_COUNT=16
+    local -a MASTER_SELECTIONS=()
+    local -a MASTER_INSTALLED_STATE=()
+    for ((i = 0; i < MENU_ITEM_COUNT; i++)); do MASTER_SELECTIONS+=(0); MASTER_INSTALLED_STATE+=(0); done
+    MASTER_SELECTIONS[0]=1
     local ACTIVE_INDICES=(0)
     local UI_TO_MASTER=()
 
@@ -4169,9 +4214,14 @@ main() {
                         "openclaw")
                             local oc_conf="$TARGET_USER_HOME/.openclaw/openclaw.json"
                             local tmp_json
-                            tmp_json=$(mktemp)
-                            sudo jq '.gateway.bind = "0.0.0.0"' "$oc_conf" | sudo tee "$tmp_json" >/dev/null &&
-                                sudo mv "$tmp_json" "$oc_conf" && sudo chown "$TARGET_USER":"$TARGET_USER" "$oc_conf"
+                            tmp_json=$(sudo mktemp)
+                            # gateway.bind uses mode strings, not IP addresses
+                            local _jq_out
+                            _jq_out=$(sudo jq '.gateway.bind = "lan"' "$oc_conf") || { echo "⚠️  jq filter failed — config not updated." >&2; }
+                            if [[ -n "$_jq_out" ]] && echo "$_jq_out" | jq empty 2>/dev/null; then
+                                echo "$_jq_out" | sudo tee "$tmp_json" >/dev/null &&
+                                    sudo mv "$tmp_json" "$oc_conf" && sudo chown "$TARGET_USER":"$TARGET_USER" "$oc_conf"
+                            fi
                             sudo ufw allow $current_oc_port/tcp &>/dev/null || true
                             exposed_msg+="  - OpenClaw Gateway is at IP:$current_oc_port\n"
                             ;;
