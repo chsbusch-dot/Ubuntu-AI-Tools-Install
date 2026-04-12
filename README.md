@@ -110,7 +110,7 @@ chmod +x ubuntu-prep-setup.sh
 ### API Keys
 
 The script will create a `~/.env.secrets` file to store your API keys securely. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.bashrc` and `.zshrc` but is ignored by Git to prevent accidental exposure.
- Focus right now is on getting up an running easily on a trusted LAN and qucikly, not security.
+ Focus right now is on getting up an running easily on a trusted LAN, not security. Install it on a VPS on your own risk.
 
 nano ~/.env.secrets
 
@@ -162,4 +162,4 @@ Tabby	        32K	    Coding	    Self-hosted GitHub Copilot server for VS Code/J
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
