@@ -95,8 +95,14 @@ SELECTED_MODEL_REPO=""
 ENABLE_UFW_AUTOMATICALLY="n"
 LLAMA_CTX_SIZE=""
 LLAMA_CACHE_TYPE_K=""
-LLAMA_CPU_MOE="n"
+LLAMA_CACHE_TYPE_V=""
+LLAMA_CPU_MOE="y"
+LLAMA_FLASH_ATTN="n"
+LLAMA_UBATCH=""
 LLAMA_VRAM_TIER=""
+LLAMA_NGL=""     # GPU layers (0–99); empty = 99 for CUDA, 0 for CPU
+LLAMA_FIT="n"    # --fit on: auto-calculate ngl to fill VRAM
+LLAMA_FIT_CTX="" # --fit-ctx N: minimum ctx --fit will not shrink below
 
 # ─── Headless Mode ────────────────────────────────────────────────
 # Run non-interactively with sensible defaults. Every HEADLESS_* var
@@ -129,8 +135,9 @@ HEADLESS_INSTALL_VGPU="${HEADLESS_INSTALL_VGPU:-n}"
 HEADLESS_REBOOT="${HEADLESS_REBOOT:-n}"
 HEADLESS_SECURITY_OPTS="${HEADLESS_SECURITY_OPTS:-c}" # "a"=all, "c"=confirm none, or "1,2,5"
 HEADLESS_CTX_SIZE="${HEADLESS_CTX_SIZE:-}"            # empty = auto from VRAM tier
-HEADLESS_CACHE_TYPE_K="${HEADLESS_CACHE_TYPE_K:-}"    # empty = auto; f16|q8_0|q4_0|bf16
-HEADLESS_CPU_MOE="${HEADLESS_CPU_MOE:-n}"             # y|n — offload MoE expert layers to CPU
+HEADLESS_CACHE_TYPE_K="${HEADLESS_CACHE_TYPE_K:-}"    # empty = auto; f16|q8_0|q4_0|bf16|turbo3|turbo4|...
+HEADLESS_CPU_MOE="${HEADLESS_CPU_MOE:-y}"             # y|n — offload MoE expert layers to CPU (default: on)
+HEADLESS_UBATCH="${HEADLESS_UBATCH:-}"                # empty = auto from VRAM tier; e.g. 1024
 
 # ask — drop-in replacement for `read -p`.
 # Interactive: reads from user; if input is empty, applies $default.
@@ -173,7 +180,10 @@ reset_local_ai_component_state() {
     ENABLE_UFW_AUTOMATICALLY="n"
     LLAMA_CTX_SIZE=""
     LLAMA_CACHE_TYPE_K=""
-    LLAMA_CPU_MOE="n"
+    LLAMA_CACHE_TYPE_V=""
+    LLAMA_CPU_MOE="y"
+    LLAMA_FLASH_ATTN="n"
+    LLAMA_UBATCH=""
     LLAMA_VRAM_TIER=""
 }
 
@@ -457,7 +467,31 @@ print_info() {
 print_status_header() {
     echo -e "\n\e[1;35m--- Ubuntu Prep Script Menu ---\e[0m"
     echo -e "Hardware: $GPU_STATUS"
+    local ram_disp="unknown"
+    local vram_disp="unknown"
+    [[ "${SYSTEM_RAM_GB:-0}" -gt 0 ]] && ram_disp="${SYSTEM_RAM_GB} GB"
+    [[ "${GPU_VRAM_GB:-0}" -gt 0 ]] && vram_disp="${GPU_VRAM_GB} GB"
+    echo -e "RAM: \e[1;36m${ram_disp}\e[0m | VRAM: \e[1;36m${vram_disp}\e[0m"
     echo -e "Target User: \e[1;36m$TARGET_USER\e[0m ($TARGET_USER_HOME)"
+    # Show llama.cpp model + key parameters if the service is currently active
+    if systemctl is-active --quiet llama-server 2>/dev/null; then
+        local exec_line llama_args model_path model_name ctx_val ctk_val ngl_val params
+        exec_line=$(sudo grep -m1 '^ExecStart=' /etc/systemd/system/llama-server.service 2>/dev/null || true)
+        llama_args=$(echo "$exec_line" | grep -oE 'llama-server.*' | head -1 || true)
+        model_path=$(echo "$llama_args" | grep -oE -- '--model [^[:space:]]+' | awk '{print $2}' || true)
+        [[ -z "$model_path" ]] && model_path=$(echo "$llama_args" | grep -oE -- '-m [^[:space:]]+' | awk '{print $2}' || true)
+        [[ -z "$model_path" ]] && model_path=$(echo "$llama_args" | grep -oE -- '--hf-file [^[:space:]]+' | awk '{print $2}' || true)
+        [[ -n "$model_path" ]] && model_name=$(basename "$model_path" 2>/dev/null || true)
+        ctx_val=$(echo "$llama_args" | grep -oE -- '-c [0-9]+' | awk '{print $2}' || true)
+        ctk_val=$(echo "$llama_args" | grep -oE -- '-ctk [^[:space:]]+' | awk '{print $2}' || true)
+        ngl_val=$(echo "$llama_args" | grep -oE -- '-ngl [0-9]+' | awk '{print $2}' || true)
+        params=""
+        [[ -n "$model_name" ]] && params+=" · \e[1;36m${model_name}\e[0m"
+        [[ -n "$ctx_val" ]] && params+=" · ctx ${ctx_val}"
+        [[ -n "$ctk_val" ]] && params+=" · ctk ${ctk_val}"
+        [[ -n "$ngl_val" ]] && params+=" · ngl ${ngl_val}"
+        echo -e "llama.cpp: \e[1;32m●\e[0m running${params}"
+    fi
 }
 
 # Function to check if running as root
@@ -527,7 +561,7 @@ curl_with_retry() {
     local n=0
     local max=3
     until curl "$@"; do
-        ((n++))
+        n=$((n + 1))
         if [[ $n -ge $max ]]; then
             echo "❌ curl failed after $max attempts." >&2
             return 1
@@ -598,6 +632,21 @@ detect_gpu() {
     else
         GPU_STATUS="\e[1;33mNVIDIA GPU status unknown (pciutils missing)\e[0m"
         HAS_NVIDIA_GPU=false
+    fi
+
+    # System RAM (total, in GB, rounded)
+    if [[ -f /proc/meminfo ]]; then
+        SYSTEM_RAM_GB=$(awk '/^MemTotal:/ { printf "%d", $2/1024/1024 + 0.5 }' /proc/meminfo)
+    else
+        SYSTEM_RAM_GB=0
+    fi
+
+    # VRAM: try nvidia-smi first, fall back to 0 if unavailable
+    if command -v nvidia-smi &>/dev/null && nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits &>/dev/null; then
+        GPU_VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null |
+            awk 'NR==1 { printf "%d", $1/1024 + 0.5 }')
+    else
+        GPU_VRAM_GB=0
     fi
 }
 
@@ -674,7 +723,7 @@ setup_env_secrets() {
 # export ESXI_USER="root"
 # export ESXI_PASSWORD="your_esxi_password"
 # export OLLAMA_ALLOWED_ORIGINS="https://chat.yourdomain.com,http://localhost:8081"
-export LLAMA_CACHE="$HOME/llama.cpp/models-user"
+export LLAMA_CACHE="$HOME/llama.cpp/models/models-user"
 export TZ="${GLOBAL_SYSTEM_TIMEZONE:-America/Los_Angeles}"
 EOF
         sudo chmod 600 "$TARGET_USER_HOME/.env.secrets"
@@ -986,6 +1035,17 @@ EOF
 
     print_success "NVM, Node.js, and NPM installed."
     print_info "Node version: $node_version, NPM version: $npm_version"
+
+    # Also install system-wide Node 22 LTS so OpenClaw's gateway service
+    # uses a stable binary instead of NVM (prevents breakage after nvm upgrades).
+    print_info "Installing system Node.js 22 LTS (recommended by openclaw doctor)..."
+    if curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1 &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs >/dev/null 2>&1; then
+        print_success "System Node.js installed: $(node --version 2>/dev/null || echo 'see /usr/bin/node')"
+    else
+        print_info "System Node.js install skipped (NodeSource unavailable — NVM-only is fine)."
+    fi
+
     POST_INSTALL_ACTIONS+=("nvm")
 }
 
@@ -1427,7 +1487,7 @@ get_llama_repo_path() {
 }
 
 get_llama_cache_path() {
-    echo "$TARGET_USER_HOME/llama.cpp/models-user"
+    echo "$TARGET_USER_HOME/llama.cpp/models/models-user"
 }
 
 get_llama_runtime_pid_path() {
@@ -1936,16 +1996,7 @@ download_hf_model_with_progress() {
     # Not an HF repo download (e.g. bare --model /path)
     [[ -z "$hf_repo" ]] && return 0
 
-    # Return already-cached file immediately
-    local existing_gguf
-    existing_gguf=$(find "$cache_dir" -name "*.gguf" 2>/dev/null | sort | head -1)
-    if [[ -n "$existing_gguf" ]]; then
-        print_info "Model already cached: $(basename "$existing_gguf")" >&2
-        echo "$existing_gguf"
-        return 0
-    fi
-
-    # Resolve HF token if available
+    # Resolve HF token if available (needed before API query)
     local hf_token=""
     if sudo test -f "$TARGET_USER_HOME/.env.secrets"; then
         hf_token=$(sudo bash -c "source \"$TARGET_USER_HOME/.env.secrets\" 2>/dev/null && echo \"\$HF_TOKEN\"" | tr -d '\r')
@@ -1956,13 +2007,13 @@ download_hf_model_with_progress() {
         print_info "Querying HuggingFace API for GGUF files in '$hf_repo'..." >&2
         local api_response=""
         if [[ -n "$hf_token" ]]; then
-            api_response=$(curl -sf -H "Authorization: Bearer $hf_token" "https://huggingface.co/api/models/$hf_repo" 2>/dev/null || true) # graceful: network may fail
+            api_response=$(curl -sf -H "Authorization: Bearer $hf_token" "https://huggingface.co/api/models/$hf_repo" 2>/dev/null || true)
         else
-            api_response=$(curl -sf "https://huggingface.co/api/models/$hf_repo" 2>/dev/null || true) # graceful: network may fail
+            api_response=$(curl -sf "https://huggingface.co/api/models/$hf_repo" 2>/dev/null || true)
         fi
-        hf_file=$(echo "$api_response" | jq -r '.siblings[].rfilename | select(endswith(".gguf"))' 2>/dev/null | grep -i "q4_k_m" | head -1 || true) # optional: prefer Q4_K_M
+        hf_file=$(echo "$api_response" | jq -r '.siblings[].rfilename | select(endswith(".gguf"))' 2>/dev/null | grep -i "q4_k_m" | head -1 || true)
         if [[ -z "$hf_file" ]]; then
-            hf_file=$(echo "$api_response" | jq -r '.siblings[].rfilename | select(endswith(".gguf"))' 2>/dev/null | head -1 || true) # fallback: any GGUF
+            hf_file=$(echo "$api_response" | jq -r '.siblings[].rfilename | select(endswith(".gguf"))' 2>/dev/null | head -1 || true)
         fi
     fi
 
@@ -1973,6 +2024,16 @@ download_hf_model_with_progress() {
 
     sudo -u "$TARGET_USER" mkdir -p "$cache_dir"
     local dest_path="$cache_dir/$hf_file"
+
+    # Check if the exact file is already cached and non-empty — skip download if so.
+    # We match on the resolved filename, not just any .gguf, so switching models
+    # (e.g. gemma → qwen) correctly triggers a fresh download of the new file.
+    if sudo test -s "$dest_path"; then
+        print_info "Model already cached: $(basename "$dest_path") — skipping download." >&2
+        echo "$dest_path"
+        return 0
+    fi
+
     local download_url="https://huggingface.co/$hf_repo/resolve/main/$hf_file"
 
     print_info "Downloading model (this may take several minutes)..." >&2
@@ -2128,38 +2189,50 @@ get_model_weight_gb() {
 # Smart defaults for context size and cache type based on available VRAM
 get_context_defaults() {
     local vram_tier="${1:-16}"
+    # Minimum context = 65536 for all tiers (OpenClaw needs ≥65K).
+    # KV cache default = q4_0 for ≤24GB (aggressive compression to fit),
+    # q4_0 for 32GB+ (comfortable headroom with large models).
+    # Ubatch default = 1024 for ≤24GB, scales up with VRAM.
     case "$vram_tier" in
         8)
-            CTX_DEFAULT=2048
-            CTK_DEFAULT="q8_0"
+            CTX_DEFAULT=65536
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=512
             ;;
         16)
-            CTX_DEFAULT=4096
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=65536
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=1024
             ;;
         24)
-            CTX_DEFAULT=8192
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=81920
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=1024
             ;;
         32)
-            CTX_DEFAULT=8192
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=81920
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=2048
             ;;
         48)
-            CTX_DEFAULT=16384
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=131072
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=2048
             ;;
         72)
-            CTX_DEFAULT=32768
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=131072
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=2048
             ;;
         96)
-            CTX_DEFAULT=32768
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=262144
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=4096
             ;;
         *)
-            CTX_DEFAULT=4096
-            CTK_DEFAULT="f16"
+            CTX_DEFAULT=65536
+            CTK_DEFAULT="q4_0"
+            UBATCH_DEFAULT=1024
             ;;
     esac
 }
@@ -2171,7 +2244,9 @@ cache_type_bytes() {
         f16 | bf16) echo "2.0" ;;
         q8_0) echo "1.0" ;;
         q5_0 | q5_1) echo "0.625" ;;
-        q4_0 | q4_1) echo "0.5" ;;
+        q4_0 | q4_1 | iq4_nl) echo "0.5" ;;
+        turbo4) echo "0.5" ;;   # optimised 4-bit KV for high-context
+        turbo3) echo "0.375" ;; # extreme 3-bit KV for maximum context
         *) echo "2.0" ;;
     esac
 }
@@ -2188,23 +2263,20 @@ estimate_vram_usage() {
     local overhead="0.5"
 
     # Heuristic: KV cache ≈ ctx_size * bytes_per_elem * scaling_factor
-    # scaling_factor accounts for n_layers * n_heads * head_dim across model sizes
-    # For a 7B model: ~20MB per 1K ctx at f16; scales roughly with model_gb
+    # Uses sqrt(model_gb/7) because KV cache depends on n_layers × n_kv_heads × head_dim,
+    # which grows sublinearly vs total params (GQA, MoE reduce KV heads).
+    # Calibrated: 7B@4K f16 ≈ 0.2GB; 26B@80K q4_0 ≈ 3GB (confirmed on 24GB GPU).
     local kv_gb
-    kv_gb=$(awk "BEGIN { printf \"%.1f\", ($ctx_size / 1024.0) * ($bytes_per / 2.0) * ($model_gb / 7.0) * 0.15 }")
+    kv_gb=$(awk "BEGIN { printf \"%.1f\", ($ctx_size / 1024.0) * ($bytes_per / 2.0) * sqrt($model_gb / 7.0) * 0.10 }")
 
     local total_gb
     total_gb=$(awk "BEGIN { printf \"%.1f\", $model_gb + $kv_gb + $overhead }")
     echo "$total_gb $model_gb $kv_gb $overhead"
 }
 
-# Returns true if the selected model is a MoE architecture
-is_moe_model() {
-    [[ "$LLM_DEFAULT_MODEL_CHOICE" == "3" ]]
-}
-
-# Interactive sub-menu for context size, KV cache type, and CPU MoE offload.
-# Shows a live VRAM estimate that updates as the user changes options.
+# Interactive sub-menu for context size, KV cache type, CPU MoE offload,
+# flash attention, and ubatch.  Shows a live VRAM estimate.
+# K and V cache types are always kept identical (mixing disables GPU offload).
 configure_context_memory() {
     local target_backend="$1"
     local vram_tier="${LLAMA_VRAM_TIER:-16}"
@@ -2214,6 +2286,18 @@ configure_context_memory() {
         return 0
     fi
 
+    # Use actual detected hardware capacity for the OOM check.
+    # For CUDA builds use GPU VRAM; for CPU-only use system RAM.
+    # Fall back to the tier bucket if detection didn't run yet.
+    local hw_capacity
+    if [[ "$target_backend" == "llama_cuda" && "${GPU_VRAM_GB:-0}" -gt 0 ]]; then
+        hw_capacity="$GPU_VRAM_GB"
+    elif [[ "$target_backend" == "llama_cpu" && "${SYSTEM_RAM_GB:-0}" -gt 0 ]]; then
+        hw_capacity="$SYSTEM_RAM_GB"
+    else
+        hw_capacity="$vram_tier"
+    fi
+
     local model_gb
     model_gb=$(get_model_weight_gb "$vram_tier")
     get_context_defaults "$vram_tier"
@@ -2221,23 +2305,54 @@ configure_context_memory() {
     # Apply headless defaults if set, otherwise use smart defaults
     local ctx="${LLAMA_CTX_SIZE:-$CTX_DEFAULT}"
     local ctk="${LLAMA_CACHE_TYPE_K:-$CTK_DEFAULT}"
-    local cpu_moe="$LLAMA_CPU_MOE"
-    local show_moe=false
-    if is_moe_model; then show_moe=true; fi
+    local cpu_moe="${LLAMA_CPU_MOE:-y}"
+    local ubatch="${LLAMA_UBATCH:-$UBATCH_DEFAULT}"
+
+    # Flash attention: on by default for CUDA, off for CPU-only
+    local flash_attn="$LLAMA_FLASH_ATTN"
+    if [[ "$target_backend" == "llama_cuda" && "$flash_attn" != "y" ]]; then
+        flash_attn="y"
+    fi
+
+    # GPU layers and auto-fit (CUDA only); pre-seeded from LLAMA_NGL/LLAMA_FIT globals
+    local ngl="${LLAMA_NGL:-99}"
+    local fit_mode="${LLAMA_FIT:-n}"
+    local fit_ctx="${LLAMA_FIT_CTX:-}"
 
     if [[ "$HEADLESS_MODE" == true ]]; then
         [[ -n "$HEADLESS_CTX_SIZE" ]] && ctx="$HEADLESS_CTX_SIZE"
         [[ -n "$HEADLESS_CACHE_TYPE_K" ]] && ctk="$HEADLESS_CACHE_TYPE_K"
         [[ "$HEADLESS_CPU_MOE" == "y" ]] && cpu_moe="y"
+        [[ -n "$HEADLESS_UBATCH" ]] && ubatch="$HEADLESS_UBATCH"
         LLAMA_CTX_SIZE="$ctx"
         LLAMA_CACHE_TYPE_K="$ctk"
+        LLAMA_CACHE_TYPE_V="$ctk"
         LLAMA_CPU_MOE="$cpu_moe"
+        LLAMA_FLASH_ATTN="$flash_attn"
+        LLAMA_UBATCH="$ubatch"
+        LLAMA_NGL="$ngl"
         return 0
     fi
 
-    local ctx_options=("2048" "4096" "8192" "16384" "32768" "65536")
-    local ctk_options=("f16" "q8_0" "q4_0" "bf16")
-    local ctk_labels=("f16  — Default, best quality" "q8_0 — Near-lossless, ~2x context" "q4_0 — Aggressive, ~3.6x context" "bf16 — Like f16, faster on Ampere+")
+    local ctx_options=("8192" "16384" "32768" "65536" "81920" "131072" "262144")
+    local ctx_labels=("8K" "16K" "32K" "64K" "80K" "128K" "256K")
+
+    local ctk_options=("f32" "f16" "bf16" "q8_0" "q5_1" "q5_0" "q4_1" "q4_0" "iq4_nl" "turbo4" "turbo3")
+    local ctk_labels=(
+        "f32     — Max precision, highest VRAM"
+        "f16     — Standard balance of quality and speed"
+        "bf16    — Like f16, preferred on Ampere/Hopper GPUs"
+        "q8_0    — Near-lossless, ~2x context vs f16"
+        "q5_1    — 5-bit quantization"
+        "q5_0    — 5-bit quantization"
+        "q4_1    — 4-bit quantization"
+        "q4_0    — Aggressive 4-bit, ~3.6x context vs f16"
+        "iq4_nl  — 4-bit non-linear quantization"
+        "turbo4  — Optimised 4-bit for 100K+ context"
+        "turbo3  — Extreme 3-bit for maximum context"
+    )
+
+    local width=56
 
     while true; do
         clear
@@ -2253,38 +2368,57 @@ configure_context_memory() {
         overhead_gb=$(echo "$estimate" | awk '{print $4}')
 
         local fits="✅"
-        local fit_color="\e[1;32m"
-        if awk "BEGIN { exit ($total_gb > $vram_tier) ? 0 : 1 }" 2>/dev/null; then
+        local fit_color=""
+        if awk "BEGIN { exit ($total_gb > $hw_capacity) ? 0 : 1 }" 2>/dev/null; then
             fits="❌ OOM risk"
             fit_color="\e[1;31m"
         fi
 
-        echo -e "\n\e[1;36m┌─ Context & Memory Configuration ─────────────────────┐\e[0m"
-        echo -e "\e[1;36m│\e[0m                                                       \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  1. Context size:    \e[1;33m[${ctx}]\e[0m  tokens                 \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  2. KV cache type:   \e[1;33m[${ctk}]\e[0m                        \e[1;36m│\e[0m"
-        if [[ "$show_moe" == true ]]; then
-            local moe_disp="off"
-            [[ "$cpu_moe" == "y" ]] && moe_disp="on"
-            echo -e "\e[1;36m│\e[0m  3. CPU MoE offload: \e[1;33m[${moe_disp}]\e[0m                        \e[1;36m│\e[0m"
+        local moe_disp="off"
+        [[ "$cpu_moe" == "y" ]] && moe_disp="on"
+        local fa_disp="off"
+        [[ "$flash_attn" == "y" ]] && fa_disp="on"
+
+        echo ""
+        echo "┌──────────────────────────────────────────────────────────┐"
+        printf "│ %-${width}s │\n" " 1. Context size:     [$ctx] tokens"
+        printf "│ %-${width}s │\n" " 2. KV cache type:    [$ctk]  (K and V matched)"
+        printf "│ %-${width}s │\n" " 3. CPU MoE offload:  [$moe_disp]"
+        printf "│ %-${width}s │\n" " 4. Flash attention:  [$fa_disp]"
+        printf "│ %-${width}s │\n" " 5. Ubatch size:      [$ubatch]"
+        if [[ "$target_backend" == "llama_cuda" ]]; then
+            local ngl_disp
+            if [[ "$fit_mode" == "y" ]]; then
+                ngl_disp="auto-fit  --fit-ctx ${fit_ctx:-${ctx}}"
+            else
+                ngl_disp="$ngl"
+            fi
+            printf "│ %-${width}s │\n" " 6. GPU layers:       [$ngl_disp]  (-ngl / --fit)"
         fi
-        echo -e "\e[1;36m│\e[0m                                                       \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  Model weights:    ${model_disp} GB                           \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  KV cache:         ${kv_gb} GB                           \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  Runtime overhead: ~${overhead_gb} GB                         \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  ─────────────────────────                          \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m  Estimated total: ${fit_color}${total_gb} / ${vram_tier}.0 GB  ${fits}\e[0m        \e[1;36m│\e[0m"
-        echo -e "\e[1;36m│\e[0m                                                       \e[1;36m│\e[0m"
+        printf "│ %-${width}s │\n" ""
+        printf "│ %-${width}s │\n" " Model weights:    ${model_disp} GB"
+        printf "│ %-${width}s │\n" " KV cache:         ${kv_gb} GB"
+        printf "│ %-${width}s │\n" " Runtime overhead: ~${overhead_gb} GB"
+        printf "│ %-${width}s │\n" " ───────────────"
+        if [[ -n "$fit_color" ]]; then
+            # OOM line with colour — use echo -e for ANSI
+            echo -e "│ $(printf "%-${width}s" " Estimated total:  ${fit_color}${total_gb} / ${hw_capacity} GB  ${fits}\e[0m")   │"
+        else
+            printf "│ %-${width}s │\n" " Estimated total:  ${total_gb} / ${hw_capacity} GB  ${fits}"
+        fi
+        printf "│ %-${width}s │\n" ""
 
         if [[ "$fits" == *"OOM"* ]]; then
-            echo -e "\e[1;36m│\e[0m  \e[1;31m⚠️  Reduce context or switch KV cache to q8_0/q4_0\e[0m  \e[1;36m│\e[0m"
-            echo -e "\e[1;36m│\e[0m                                                       \e[1;36m│\e[0m"
+            printf "│ %-${width}s │\n" " ⚠️  Reduce context or switch to q4_0/turbo4/turbo3"
+            printf "│ %-${width}s │\n" ""
         fi
 
-        local opts_hint="[1-2]"
-        [[ "$show_moe" == true ]] && opts_hint="[1-3]"
-        echo -e "\e[1;36m│\e[0m  \e[1;32m[c]\e[0m Confirm  ${opts_hint} Change  \e[1;33m[d]\e[0m Defaults             \e[1;36m│\e[0m"
-        echo -e "\e[1;36m└───────────────────────────────────────────────────────┘\e[0m"
+        if [[ "$target_backend" == "llama_cuda" ]]; then
+            printf "│ %-${width}s │\n" " [c] Confirm  [1-6] Change  [d] Defaults"
+        else
+            printf "│ %-${width}s │\n" " [c] Confirm  [1-5] Change  [d] Defaults"
+        fi
+        echo "└──────────────────────────────────────────────────────────┘"
         echo ""
         read -p "Your choice: " mem_choice
 
@@ -2295,46 +2429,127 @@ configure_context_memory() {
                 for i in "${!ctx_options[@]}"; do
                     local marker="  "
                     [[ "${ctx_options[$i]}" == "$ctx" ]] && marker="> "
-                    echo "    ${marker}$((i + 1)). ${ctx_options[$i]} tokens"
+                    echo "    ${marker}$((i + 1)). ${ctx_options[$i]} tokens  (${ctx_labels[$i]})"
                 done
-                echo "    7. Custom"
-                read -p "  Select [1-7]: " ctx_choice
-                if [[ "$ctx_choice" =~ ^[1-6]$ ]]; then
+                echo "    $((${#ctx_options[@]} + 1)). Custom"
+                local max_ctx_choice=$((${#ctx_options[@]} + 1))
+                read -p "  Select [1-${max_ctx_choice}]: " ctx_choice
+                if [[ "$ctx_choice" =~ ^[0-9]+$ ]] && [[ "$ctx_choice" -ge 1 && "$ctx_choice" -le ${#ctx_options[@]} ]]; then
                     ctx="${ctx_options[$((ctx_choice - 1))]}"
-                elif [[ "$ctx_choice" == "7" ]]; then
+                elif [[ "$ctx_choice" == "$max_ctx_choice" ]]; then
                     read -p "  Enter custom context size: " custom_ctx
-                    if [[ "$custom_ctx" =~ ^[0-9]+$ && "$custom_ctx" -ge 128 ]]; then
+                    if [[ "$custom_ctx" =~ ^[0-9]+$ && "$custom_ctx" -ge 2048 ]]; then
                         ctx="$custom_ctx"
                     else
-                        echo "  Invalid — must be a number ≥ 128." && sleep 1
+                        echo "  Invalid — must be a number ≥ 2048." && sleep 1
                     fi
                 fi
                 ;;
             2)
                 echo ""
-                echo "  KV cache type options:"
-                for i in "${!ctk_options[@]}"; do
+                echo "  KV cache type options (applied to both K and V):"
+                echo ""
+                echo "  Full Precision:"
+                for i in 0 1 2; do
                     local marker="  "
                     [[ "${ctk_options[$i]}" == "$ctk" ]] && marker="> "
                     echo "    ${marker}$((i + 1)). ${ctk_labels[$i]}"
                 done
-                read -p "  Select [1-4]: " ctk_choice
-                if [[ "$ctk_choice" =~ ^[1-4]$ ]]; then
+                echo ""
+                echo "  Quantized (VRAM Saving):"
+                for i in 3 4 5 6 7 8; do
+                    local marker="  "
+                    [[ "${ctk_options[$i]}" == "$ctk" ]] && marker="> "
+                    echo "    ${marker}$((i + 1)). ${ctk_labels[$i]}"
+                done
+                echo ""
+                echo "  Experimental:"
+                for i in 9 10; do
+                    local marker="  "
+                    [[ "${ctk_options[$i]}" == "$ctk" ]] && marker="> "
+                    echo "    ${marker}$((i + 1)). ${ctk_labels[$i]}"
+                done
+                read -p "  Select [1-${#ctk_options[@]}]: " ctk_choice
+                if [[ "$ctk_choice" =~ ^[0-9]+$ ]] && [[ "$ctk_choice" -ge 1 && "$ctk_choice" -le ${#ctk_options[@]} ]]; then
                     ctk="${ctk_options[$((ctk_choice - 1))]}"
                 fi
                 ;;
             3)
-                if [[ "$show_moe" == true ]]; then
-                    if [[ "$cpu_moe" == "y" ]]; then cpu_moe="n"; else cpu_moe="y"; fi
-                else
-                    echo -e "\nInvalid option." && sleep 1
+                if [[ "$cpu_moe" == "y" ]]; then cpu_moe="n"; else cpu_moe="y"; fi
+                ;;
+            4)
+                if [[ "$flash_attn" == "y" ]]; then flash_attn="n"; else flash_attn="y"; fi
+                if [[ "$target_backend" != "llama_cuda" && "$flash_attn" == "y" ]]; then
+                    echo -e "\n  ⚠️  Flash attention requires CUDA. It may not work on CPU-only builds." && sleep 2
+                fi
+                ;;
+            5)
+                echo ""
+                echo "  Ubatch size controls prompt processing batch size."
+                echo "  Larger = faster prompt ingestion but more VRAM spikes."
+                echo ""
+                echo "    1.  512"
+                echo "    2. 1024  (recommended)"
+                echo "    3. 2048"
+                echo "    4. 4096"
+                echo "    5. Custom"
+                read -p "  Select [1-5]: " ub_choice
+                case "$ub_choice" in
+                    1) ubatch="512" ;;
+                    2) ubatch="1024" ;;
+                    3) ubatch="2048" ;;
+                    4) ubatch="4096" ;;
+                    5)
+                        read -p "  Enter custom ubatch size: " custom_ub
+                        if [[ "$custom_ub" =~ ^[0-9]+$ && "$custom_ub" -ge 32 ]]; then
+                            ubatch="$custom_ub"
+                        else
+                            echo "  Invalid — must be a number ≥ 32." && sleep 1
+                        fi
+                        ;;
+                esac
+                ;;
+            6)
+                if [[ "$target_backend" == "llama_cuda" ]]; then
+                    echo ""
+                    echo "  -ngl N     offload N transformer layers to GPU (0–99, 99 = all)."
+                    echo "  --fit on   auto-calculate optimal -ngl to fill VRAM without OOM."
+                    echo "  --fit-ctx  minimum context size --fit will not shrink below."
+                    echo ""
+                    while true; do
+                        read -rp "  GPU layers (0–99) [${ngl}], or 'f' to enable auto-fit: " ngl_input
+                        if [[ "$ngl_input" == "f" || "$ngl_input" == "F" ]]; then
+                            fit_mode="y"
+                            local fc_default="${fit_ctx:-${ctx}}"
+                            read -rp "  Minimum context floor [${fc_default}]: " fc_input
+                            [[ -n "$fc_input" && "$fc_input" =~ ^[0-9]+$ ]] && fc_default="$fc_input"
+                            fit_ctx="$fc_default"
+                            echo -e "  \e[1;32m✅\e[0m Auto-fit on — --fit-ctx ${fit_ctx}"
+                            sleep 1
+                            break
+                        elif [[ -z "$ngl_input" ]]; then
+                            fit_mode="n"
+                            break
+                        elif [[ "$ngl_input" =~ ^[0-9]+$ ]] && [ "$ngl_input" -ge 0 ] && [ "$ngl_input" -le 99 ]; then
+                            ngl="$ngl_input"
+                            fit_mode="n"
+                            break
+                        else
+                            echo "  Please enter 0–99 or 'f' for auto-fit."
+                        fi
+                    done
                 fi
                 ;;
             d | D)
                 get_context_defaults "$vram_tier"
                 ctx="$CTX_DEFAULT"
                 ctk="$CTK_DEFAULT"
-                cpu_moe="n"
+                cpu_moe="y"
+                ubatch="$UBATCH_DEFAULT"
+                ngl=99
+                fit_mode="n"
+                fit_ctx=""
+                if [[ "$target_backend" == "llama_cuda" ]]; then flash_attn="y"; else flash_attn="n"; fi
                 ;;
             c | C)
                 break
@@ -2347,7 +2562,13 @@ configure_context_memory() {
 
     LLAMA_CTX_SIZE="$ctx"
     LLAMA_CACHE_TYPE_K="$ctk"
+    LLAMA_CACHE_TYPE_V="$ctk"
     LLAMA_CPU_MOE="$cpu_moe"
+    LLAMA_FLASH_ATTN="$flash_attn"
+    LLAMA_UBATCH="$ubatch"
+    LLAMA_NGL="$ngl"
+    LLAMA_FIT="$fit_mode"
+    LLAMA_FIT_CTX="$fit_ctx"
 }
 
 configure_llm_model_prompt() {
@@ -2714,20 +2935,10 @@ configure_openclaw_selection() {
 
     OPENCLAW_COMPONENT_ACTION=$(derive_component_action "$OPENCLAW_COMPONENT_STATUS" "1")
 
-    echo ""
-    echo -e "\e[1;33mWARNING: Do not expose OpenClaw on a VPS connected directly to the internet without proper security.\e[0m"
-    read -p "Do you want to expose OpenClaw to the LAN (bind to all interfaces)? [y/N]: " expose_oc
-    if [[ "$expose_oc" == "y" || "$expose_oc" == "Y" ]]; then
-        EXPOSE_OPENCLAW="y"
-    fi
-
-    echo ""
-    read -p "Do you want to run OpenClaw on port 8082 instead of 18789? [y/N]: " oc_port_choice
-    if [[ "$oc_port_choice" == "y" || "$oc_port_choice" == "Y" ]]; then
-        OPENCLAW_PORT="8082"
-    else
-        OPENCLAW_PORT="18789"
-    fi
+    # Expose/port/tailscale are configured in the post-install security menu
+    # (after openclaw onboard). Defaults set here can be overridden there.
+    EXPOSE_OPENCLAW="n"
+    OPENCLAW_PORT="8082" # default; security menu item 7 can change to 18789
 
     if need_frontend_backend_target || [[ "$LLAMA_COMPONENT_STATUS" != "missing" || "$OLLAMA_COMPONENT_STATUS" != "missing" || "$LLAMA_COMPONENT_ACTION" != "skip" || "$OLLAMA_COMPONENT_ACTION" != "skip" ]]; then
         ensure_frontend_backend_target
@@ -2879,7 +3090,11 @@ install_local_llm() {
         hf_args=$(build_llama_hf_args)
 
         if [[ "$install_llamacpp_cuda" == "y" ]]; then
-            llama_host_args+=" -ngl 99"
+            if [[ "$LLAMA_FIT" == "y" ]]; then
+                llama_host_args+=" --fit on --fit-ctx ${LLAMA_FIT_CTX:-${LLAMA_CTX_SIZE:-65536}}"
+            else
+                llama_host_args+=" -ngl ${LLAMA_NGL:-99}"
+            fi
         fi
         if [[ "$EXPOSE_LLM_ENGINE" == "y" ]]; then
             llama_host_args+=" --host 0.0.0.0"
@@ -2887,10 +3102,19 @@ install_local_llm() {
 
         # Context & memory flags from configure_context_memory()
         if [[ -n "$LLAMA_CTX_SIZE" ]]; then
-            llama_host_args+=" --ctx-size $LLAMA_CTX_SIZE"
+            llama_host_args+=" -c $LLAMA_CTX_SIZE"
         fi
         if [[ -n "$LLAMA_CACHE_TYPE_K" ]]; then
-            llama_host_args+=" --cache-type-k $LLAMA_CACHE_TYPE_K"
+            llama_host_args+=" -ctk $LLAMA_CACHE_TYPE_K"
+        fi
+        if [[ -n "$LLAMA_CACHE_TYPE_V" ]]; then
+            llama_host_args+=" -ctv $LLAMA_CACHE_TYPE_V"
+        fi
+        if [[ "$LLAMA_FLASH_ATTN" == "y" && "$install_llamacpp_cuda" == "y" ]]; then
+            llama_host_args+=" --flash-attn on"
+        fi
+        if [[ -n "$LLAMA_UBATCH" ]]; then
+            llama_host_args+=" --ubatch-size $LLAMA_UBATCH"
         fi
         if [[ "$LLAMA_CPU_MOE" == "y" ]]; then
             llama_host_args+=" --cpu-moe"
@@ -3238,6 +3462,15 @@ version: 1.1.5
 cache: true
 interface:
   defaultEndpoint: \"$lc_name\"
+modelSpecs:
+  enforce: false
+  list:
+    - name: \"$lc_name\"
+      label: \"$lc_name\"
+      default: true
+      preset:
+        endpoint: \"$lc_name\"
+        model: \"default\"
 endpoints:
   custom:
     - name: \"$lc_name\"
@@ -3404,13 +3637,62 @@ EOF
 
         curl -fsSL https://openclaw.ai/install.sh | bash;
 
+        # Pre-populate ~/.openclaw/.env with API keys from ~/.env.secrets so
+        # that "openclaw onboard" can pick them up non-interactively.
+        mkdir -p "$HOME/.openclaw";
+        grep -E '^export [A-Z_]*(API_KEY|TOKEN)[^=]*=' "$HOME/.env.secrets" 2>/dev/null \
+            | sed 's/^export //' \
+            > "$HOME/.openclaw/.env";
+        chmod 600 "$HOME/.openclaw/.env";
+
         export PATH="$HOME/.local/bin:$PATH";
         export XDG_RUNTIME_DIR="/run/user/$(id -u)";
         export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus";
 
+        # Export keys into the current shell so openclaw onboard reads them
+        if [ -s "$HOME/.openclaw/.env" ]; then
+            set -o allexport;
+            source "$HOME/.openclaw/.env";
+            set +o allexport;
+        fi;
         openclaw onboard --install-daemon;
 EOF
     )
+
+    # Create ~/.openclaw/.env from ~/.env.secrets NOW (before su) so the file
+    # exists for both the OpenClaw installer and openclaw onboard to read.
+    print_info "Pre-populating ~/.openclaw/.env from ~/.env.secrets..."
+    sudo -u "$TARGET_USER" mkdir -p "$TARGET_USER_HOME/.openclaw"
+    if sudo test -f "$TARGET_USER_HOME/.env.secrets"; then
+        # Extract non-empty API keys/tokens; strip 'export ' prefix;
+        # filter blank values (KEY="" or KEY=''); add ANTHROPIC_API_KEY
+        # alias when only CLAUDE_API_KEY is present (OpenClaw naming).
+        local env_content
+        env_content=$(sudo grep -E '^export [A-Z_]*(API_KEY|TOKEN)[^=]*=' \
+            "$TARGET_USER_HOME/.env.secrets" 2>/dev/null |
+            sed 's/^export //' |
+            grep -v '=""$' |
+            grep -v "=''$" |
+            grep -vE '=[[:space:]]*$' ||
+            true)
+        if [[ "$env_content" == *'CLAUDE_API_KEY='* ]] &&
+            [[ "$env_content" != *'ANTHROPIC_API_KEY='* ]]; then
+            local _claude_val
+            _claude_val=$(printf '%s\n' "$env_content" | grep '^CLAUDE_API_KEY=' | head -1 | cut -d'=' -f2-)
+            env_content="${env_content}"$'\n'"ANTHROPIC_API_KEY=${_claude_val}"
+        fi
+        printf '%s\n' "$env_content" | grep -v '^[[:space:]]*$' |
+            sudo -u "$TARGET_USER" tee "$TARGET_USER_HOME/.openclaw/.env" >/dev/null || true
+        sudo chmod 600 "$TARGET_USER_HOME/.openclaw/.env"
+        sudo chown "$TARGET_USER":"$TARGET_USER" "$TARGET_USER_HOME/.openclaw/.env"
+        local env_line_count
+        env_line_count=$(printf '%s\n' "$env_content" | grep -c '[^[:space:]]' || echo 0)
+        print_info ".openclaw/.env written (${env_line_count} key(s) from .env.secrets)."
+    else
+        print_info "No .env.secrets found — ~/.openclaw/.env will be empty; you will be prompted for API keys."
+        sudo -u "$TARGET_USER" touch "$TARGET_USER_HOME/.openclaw/.env"
+        sudo chmod 600 "$TARGET_USER_HOME/.openclaw/.env"
+    fi
 
     print_info "Switching to '$TARGET_USER' to install and onboard OpenClaw."
     echo -e "\e[1;33mYou will be prompted for the password for user '$TARGET_USER'.\e[0m"
@@ -3454,46 +3736,31 @@ EOF
 
     local openclaw_config="$TARGET_USER_HOME/.openclaw/openclaw.json"
     if sudo test -f "$openclaw_config"; then
-        print_info "Updating OpenClaw gateway configuration..."
-        # Use jq to safely update the JSON config file
-        local tmp_json_file
-        tmp_json_file=$(sudo mktemp)
-        # gateway.bind takes a mode string, not an IP address
-        local bind_mode="loopback"
-        if [[ "$EXPOSE_OPENCLAW" == "y" ]]; then bind_mode="lan"; fi
-        local _jq_out
-        _jq_out=$(sudo jq ".gateway.bind = \"$bind_mode\" | .gateway.port = $OPENCLAW_PORT | .gateway.controlUi.enabled = true" "$openclaw_config") || { echo "⚠️  jq filter failed — config not updated." >&2; }
-        if [[ -n "$_jq_out" ]] && echo "$_jq_out" | jq empty 2>/dev/null; then
-            echo "$_jq_out" | sudo tee "$tmp_json_file" >/dev/null &&
-                sudo mv "$tmp_json_file" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
-        fi
-        print_success "OpenClaw gateway configured (bind: $bind_mode, port: $OPENCLAW_PORT)."
-    else
-        echo "⚠️  OpenClaw config file not found at ${openclaw_config}. Skipping gateway configuration."
-    fi
 
-    if [[ "$EXPOSE_OPENCLAW" == "y" ]]; then
-        print_info "Configuring firewall rules for OpenClaw (UFW)..."
-        sudo ufw allow $OPENCLAW_PORT/tcp &>/dev/null || true # ufw may not be installed
-        POST_INSTALL_ACTIONS+=("ufw")
-        print_success "UFW rule for OpenClaw ($OPENCLAW_PORT) configured."
-    fi
-
-    if sudo test -f "$openclaw_config"; then
+        # ── Combined: Configure & Secure OpenClaw ────────────────────────────
+        # Items 1-5 : security hardening
+        # Items 6-9 : gateway/network settings
+        # Everything is applied in one pass after the user confirms.
         local sec_options=(
             "Disable mDNS (LAN discovery broadcasts)"
             "Enable Docker Sandboxing (Highly Recommended)"
             "Restrict Exec Tools (require approval; block shell & filesystem_delete)"
             "Lock Configuration Permissions (chmod 700/600)"
             "Run Deep Security Audit now"
+            "Expose to LAN (bind 0.0.0.0)  *** WARNING: use firewall ***"
+            "Use port 8082 (instead of default 18789)"
+            "Allow Insecure Connections to Control UI"
+            "Install Tailscale & use 'openclaw gateway --tailscale serve'"
         )
-        local sec_selections=(1 1 1 1 1)
+        # Defaults: security items on, expose off, port-8082 on, insecure off, tailscale off
+        local sec_selections=(1 1 1 1 1 0 1 0 0)
 
         while true; do
             clear
             print_status_header
-            echo -e "\n\e[1;36mSecure OpenClaw Configuration:\e[0m"
+            echo -e "\n\e[1;36mConfigure & Secure OpenClaw:\e[0m"
             for i in "${!sec_options[@]}"; do
+                [[ $i -eq 5 ]] && echo "  ─────────────────────────────────────── Gateway & Access"
                 if [[ ${sec_selections[$i]} -eq 1 ]]; then
                     echo -e " \e[1;32m[x]\e[0m $((i + 1)). ${sec_options[$i]}"
                 else
@@ -3501,9 +3768,10 @@ EOF
                 fi
             done
             echo "---------------------------------"
-            echo "Use numbers [1-${#sec_options[@]}] to toggle. Press 'a' to select all, 'c' to confirm."
-            read -p "Your choice: " sec_choice
-            if [[ "$sec_choice" =~ ^[0-9]+$ ]] && [ "$sec_choice" -ge 1 ] && [ "$sec_choice" -le ${#sec_options[@]} ]; then
+            echo "Use numbers [1-9] to toggle.  'a' = select all,  'c' = confirm."
+            read -rp "Your choice: " sec_choice
+            if [[ "$sec_choice" =~ ^[0-9]+$ ]] && \
+               [ "$sec_choice" -ge 1 ] && [ "$sec_choice" -le "${#sec_options[@]}" ]; then
                 local idx=$((sec_choice - 1))
                 sec_selections[$idx]=$((1 - sec_selections[$idx]))
             elif [[ "$sec_choice" == "a" || "$sec_choice" == "A" ]]; then
@@ -3515,15 +3783,89 @@ EOF
             fi
         done
 
+        # ── Apply item 6 (expose) & item 7 (port) → update globals ──────────
+        if [[ ${sec_selections[5]} -eq 1 ]]; then EXPOSE_OPENCLAW="y"; else EXPOSE_OPENCLAW="n"; fi
+        if [[ ${sec_selections[6]} -eq 1 ]]; then OPENCLAW_PORT="8082"; else OPENCLAW_PORT="18789"; fi
+
+        local bind_mode="loopback"
+        [[ "$EXPOSE_OPENCLAW" == "y" ]] && bind_mode="lan"
+
+        local oc_ctx="${LLAMA_CTX_SIZE:-65536}"
+        [[ "$oc_ctx" -lt 65536 ]] && oc_ctx=65536
+
+        local server_lan_ip
+        server_lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+
+        # ── allowedOrigins prompt ────────────────────────────────────────────
+        echo ""
+        print_info "OpenClaw Control UI access configuration"
+        echo "  The Control UI will be at: http://${server_lan_ip:-<server-ip>}:${OPENCLAW_PORT}/chat"
+        echo ""
+        echo "  Enter the IP(s) of machines that will open the Control UI (comma-separated),"
+        echo "  or leave blank to allow all origins (*)."
+        echo ""
+        local oc_client_ips_raw oc_origins_json
+        read -rp "  Client machine IP(s) [blank = allow all]: " oc_client_ips_raw
+        if [[ -z "$oc_client_ips_raw" ]]; then
+            oc_origins_json='["*"]'
+        else
+            local origins_list
+            origins_list="\"http://localhost:${OPENCLAW_PORT}\", \"http://127.0.0.1:${OPENCLAW_PORT}\""
+            [[ -n "$server_lan_ip" ]] && origins_list+=", \"http://${server_lan_ip}:${OPENCLAW_PORT}\""
+            IFS=',' read -ra _oc_client_arr <<<"$oc_client_ips_raw"
+            for _cip in "${_oc_client_arr[@]}"; do
+                _cip="${_cip// /}"
+                [[ -z "$_cip" ]] && continue
+                origins_list+=", \"http://${_cip}\", \"http://${_cip}:${OPENCLAW_PORT}\""
+            done
+            oc_origins_json="[ $origins_list ]"
+        fi
+        print_info "allowedOrigins → $oc_origins_json"
+
+        # ── Apply jq: bind / port / origins / rate-limit ────────────────────
+        local tmp_json_file
+        tmp_json_file=$(sudo mktemp)
+        local oc_jq_filter
+        oc_jq_filter=".gateway.bind = \"$bind_mode\" | .gateway.port = $OPENCLAW_PORT | .gateway.controlUi.enabled = true"
+        oc_jq_filter="$oc_jq_filter | .gateway.controlUi.allowedOrigins = $oc_origins_json"
+        if [[ "$bind_mode" != "loopback" ]]; then
+            oc_jq_filter="$oc_jq_filter | .gateway.controlUi.allowInsecureAuth = false"
+            oc_jq_filter="$oc_jq_filter | .gateway.auth.rateLimit = {\"maxAttempts\": 10, \"windowMs\": 60000, \"lockoutMs\": 300000}"
+        fi
+        oc_jq_filter="$oc_jq_filter | .agents.defaults.compaction.reserveTokensFloor = 20000"
+        oc_jq_filter="$oc_jq_filter | (.providers // {}) as \$p | if (\$p | keys | map(select(startswith(\"custom-127\"))) | length) > 0 then (.providers[(.providers | keys | map(select(startswith(\"custom-127\"))))[0]].models[0].contextWindow = $oc_ctx) else . end"
+
+        local _jq_out
+        _jq_out=$(sudo jq "$oc_jq_filter" "$openclaw_config") || { echo "⚠️  jq filter failed — config not updated." >&2; }
+        if [[ -n "$_jq_out" ]] && echo "$_jq_out" | jq empty 2>/dev/null; then
+            echo "$_jq_out" | sudo tee "$tmp_json_file" >/dev/null &&
+                sudo mv "$tmp_json_file" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
+            print_info "Restarting OpenClaw to apply gateway configuration..."
+            sudo -u "$TARGET_USER" bash -c "
+                export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"
+                export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"
+                systemctl --user restart openclaw-gateway.service 2>/dev/null || \
+                systemctl --user restart openclaw.service 2>/dev/null || true"
+        fi
+        print_success "OpenClaw gateway configured (bind: $bind_mode, port: $OPENCLAW_PORT, context: $oc_ctx)."
+
+        # UFW for LAN exposure (item 6)
+        if [[ "$EXPOSE_OPENCLAW" == "y" ]]; then
+            print_info "Configuring firewall rules for OpenClaw (UFW)..."
+            sudo ufw allow "$OPENCLAW_PORT"/tcp &>/dev/null || true
+            POST_INSTALL_ACTIONS+=("ufw")
+            print_success "UFW rule for OpenClaw ($OPENCLAW_PORT) configured."
+        fi
+
+        # ── Apply security jq filters (items 1-3) ───────────────────────────
         local tmp_json_file2
         tmp_json_file2=$(sudo mktemp)
         local jq_filters="."
-
         if [[ ${sec_selections[0]} -eq 1 ]]; then jq_filters="$jq_filters | .discovery.mdns.mode = \"off\""; fi
         if [[ ${sec_selections[1]} -eq 1 ]]; then jq_filters="$jq_filters | .agents.defaults.sandbox.mode = \"all\""; fi
-        # tools.exec.ask = "always" prompts before every exec tool call
-        # tools.deny blocks shell and filesystem_delete outright
-        if [[ ${sec_selections[2]} -eq 1 ]]; then jq_filters="$jq_filters | .tools.exec.ask = \"always\" | .tools.deny = ((.tools.deny // []) + [\"shell\", \"filesystem_delete\"] | unique)"; fi
+        if [[ ${sec_selections[2]} -eq 1 ]]; then
+            jq_filters="$jq_filters | .tools.exec.ask = \"always\" | .tools.deny = ((.tools.deny // []) + [\"shell\", \"filesystem_delete\"] | unique)"
+        fi
 
         if [ "$jq_filters" != "." ]; then
             print_info "Applying OpenClaw security configuration..."
@@ -3536,11 +3878,25 @@ EOF
                 echo "$validated_json" | sudo tee "$tmp_json_file2" >/dev/null &&
                     sudo mv "$tmp_json_file2" "$openclaw_config" && sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
                 print_info "Restarting OpenClaw daemon to apply security settings..."
-                sudo -u "$TARGET_USER" bash -c "export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"; systemctl --user restart openclaw.service 2>/dev/null || true"
+                sudo -u "$TARGET_USER" bash -c "
+                    export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"
+                    export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"
+                    systemctl --user restart openclaw-gateway.service 2>/dev/null || \
+                    systemctl --user restart openclaw.service 2>/dev/null || true"
                 print_success "OpenClaw security settings applied."
             fi
         fi
 
+        # ── Item 8: Allow Insecure Connections ──────────────────────────────
+        if [[ ${sec_selections[7]} -eq 1 ]]; then
+            print_info "Enabling insecure auth for Control UI..."
+            local _oc_nvm_env="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; export PATH=\"$TARGET_USER_HOME/.local/bin:\$PATH\""
+            sudo -u "$TARGET_USER" bash -c "$_oc_nvm_env; openclaw config set gateway.controlUi.dangerouslyDisableDeviceAuth true" 2>/dev/null || true
+            sudo -u "$TARGET_USER" bash -c "$_oc_nvm_env; openclaw config set gateway.controlUi.allowInsecureAuth true" 2>/dev/null || true
+            print_success "Insecure auth enabled (dangerouslyDisableDeviceAuth + allowInsecureAuth)."
+        fi
+
+        # ── Item 4: Lock permissions ─────────────────────────────────────────
         if [[ ${sec_selections[3]} -eq 1 ]]; then
             print_info "Locking OpenClaw configuration permissions..."
             sudo chmod 700 "$TARGET_USER_HOME/.openclaw"
@@ -3548,9 +3904,46 @@ EOF
             print_success "Permissions locked (700 for .openclaw, 600 for openclaw.json)."
         fi
 
+        # ── Item 9: Install Tailscale & configure service ────────────────────
+        if [[ ${sec_selections[8]} -eq 1 ]]; then
+            print_info "Installing Tailscale..."
+            if curl -fsSL https://tailscale.com/install.sh | sh; then
+                print_success "Tailscale installed."
+            else
+                print_info "Tailscale install script failed — trying apt..."
+                sudo apt-get update -qq
+                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale >/dev/null 2>&1 || true
+            fi
+            echo ""
+            print_info "Connecting to Tailscale (you will be shown a login URL to authenticate)..."
+            sudo tailscale up || true
+            echo ""
+            sudo ufw allow in on tailscale0 &>/dev/null || true
+            local _oc_svc_file="$TARGET_USER_HOME/.config/systemd/user/openclaw-gateway.service"
+            if sudo test -f "$_oc_svc_file"; then
+                print_info "Patching OpenClaw service to use 'openclaw gateway --tailscale serve'..."
+                sudo sed -i 's/gateway --port [0-9]*/gateway --tailscale serve/' "$_oc_svc_file"
+                sudo -u "$TARGET_USER" bash -c "
+                    export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"
+                    export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"
+                    systemctl --user daemon-reload
+                    systemctl --user restart openclaw-gateway.service 2>/dev/null || \
+                    systemctl --user restart openclaw.service 2>/dev/null || true"
+                local _ts_ip
+                _ts_ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
+                print_success "OpenClaw configured for Tailscale serve."
+                [[ -n "$_ts_ip" ]] && print_info "Tailscale IP: ${_ts_ip}"
+            else
+                echo "⚠️  OpenClaw service file not found — Tailscale patch skipped."
+            fi
+        fi
+
+        # ── Item 5: Deep Security Audit ──────────────────────────────────────
         if [[ ${sec_selections[4]} -eq 1 ]]; then
             print_info "Running OpenClaw Deep Security Audit..."
-            sudo -u "$TARGET_USER" bash -c "export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; export PATH=\"$TARGET_USER_HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:\$PATH\"; openclaw security audit --deep" || echo -e "⚠️ \e[1;33mAudit returned warnings/errors, please review.\e[0m"
+            local _oc_audit_env="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; export PATH=\"$TARGET_USER_HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:\$PATH\""
+            sudo -u "$TARGET_USER" bash -c "$_oc_audit_env; openclaw security audit --deep" \
+                || echo -e "⚠️ \e[1;33mAudit returned warnings/errors, please review.\e[0m"
             echo ""
             read -n 1 -s -r -p "Press any key to continue..."
             echo ""
@@ -3847,7 +4240,15 @@ print_final_summary() {
     if command -v llama-server &>/dev/null; then
         print_info "llama.cpp:"
         echo "llama-server installed at $(command -v llama-server)"
+        echo ""
+        echo -e "  \e[1;36m-> Service commands:\e[0m"
+        echo "     sudo systemctl start   llama-server"
+        echo "     sudo systemctl stop    llama-server"
+        echo "     sudo systemctl restart llama-server"
+        echo "     sudo systemctl status  llama-server"
+        echo "     sudo journalctl -u llama-server -f   # follow live logs"
         if systemctl is-active --quiet llama-server 2>/dev/null; then
+            echo ""
             echo -e "  \e[1;36m-> To test your live API server from the terminal, run:\e[0m"
             cat <<'EOF'
      curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
@@ -3967,6 +4368,521 @@ EOF
     if [[ "$unique_actions" == *"reboot"* ]]; then
         print_info "A system reboot is highly recommended to ensure all NVIDIA drivers are loaded correctly."
     fi
+
+    # Save clean summary to file at the end of every install run
+    save_ai_settings_file
+}
+
+# Write a clean, plain-text AI-settings summary to ~/AI-settings.txt
+# Called from print_final_summary (after install) and the 's' goal-menu key.
+save_ai_settings_file() {
+    local out_file="$HOME/AI-settings.txt"
+    local _lan_ip
+    _lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local _nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
+    local _brew_cmd="[ -f /home/linuxbrew/.linuxbrew/bin/brew ] && eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\""
+    {
+        echo "===== Installed Components & Verification ====="
+        echo "Generated: $(date)"
+        echo "Host:      $(hostname)  (${_lan_ip:-<ip>})"
+        echo ""
+
+        # --- Installed options ---
+        if [[ ${#MASTER_OPTIONS[@]} -gt 0 ]]; then
+            echo "Installed Options:"
+            local _found_opt=0
+            for _i in "${!MASTER_OPTIONS[@]}"; do
+                if [[ ${MASTER_INSTALLED_STATE[$_i]:-0} -eq 1 || ${MASTER_SELECTIONS[$_i]:-0} -eq 1 ]]; then
+                    echo "  - ${MASTER_OPTIONS[$_i]}"
+                    _found_opt=1
+                fi
+            done
+            [[ $_found_opt -eq 0 ]] && echo "  (none recorded)"
+            echo ""
+        fi
+
+        if [[ ${#INSTALLED_COMPONENTS[@]} -gt 0 ]]; then
+            echo "Newly Installed Components:"
+            printf '  - %s\n' "${INSTALLED_COMPONENTS[@]}"
+            echo ""
+        fi
+
+        if [[ ${#REPAIRED_COMPONENTS[@]} -gt 0 ]]; then
+            echo "Repaired Components:"
+            printf '  - %s\n' "${REPAIRED_COMPONENTS[@]}"
+            echo ""
+        fi
+
+        if [[ ${#FAILED_COMPONENTS[@]} -gt 0 ]]; then
+            echo "Failed Components:"
+            printf '  - %s\n' "${FAILED_COMPONENTS[@]}"
+            echo ""
+        fi
+
+        # --- Hardware ---
+        echo "Hardware:"
+        echo "  RAM:  ${SYSTEM_RAM_GB:-?} GB"
+        echo "  VRAM: ${GPU_VRAM_GB:-?} GB"
+        echo "  GPU:  ${GPU_STATUS:-unknown}"
+        echo ""
+
+        # --- Per-component software sections (mirrors print_final_summary) ---
+        if sudo test -d "$TARGET_USER_HOME/.oh-my-zsh" && command -v zsh &>/dev/null; then
+            echo "Zsh / Oh My Zsh:"
+            zsh --version 2>/dev/null || echo "Installed"
+            echo ""
+        fi
+
+        if command -v python3 &>/dev/null; then
+            echo "Python:"
+            python3 --version
+            echo ""
+        fi
+
+        if command -v docker &>/dev/null; then
+            echo "Docker:"
+            docker --version
+            echo ""
+        fi
+
+        if sudo test -s "$TARGET_USER_HOME/.nvm/nvm.sh"; then
+            echo "Node.js & NPM (via NVM):"
+            sudo -u "$TARGET_USER" bash -c "$_nvm_cmd; echo -n 'Node: '; node -v; echo -n 'NPM:  '; npm -v" 2>/dev/null ||
+                echo "  (run as $TARGET_USER with NVM loaded)"
+            echo ""
+        fi
+
+        if [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
+            echo "Homebrew:"
+            sudo -u "$TARGET_USER" bash -c "$_brew_cmd; brew --version | head -n 1" 2>/dev/null ||
+                echo "  Installed (source $TARGET_USER_HOME/.zshrc to activate)"
+            echo ""
+        fi
+
+        if command -v gemini &>/dev/null; then
+            echo "Google Gemini CLI:"
+            echo "Installed at $(command -v gemini)"
+            echo ""
+        fi
+
+        if command -v nvidia-smi &>/dev/null; then
+            echo "NVIDIA GPU/vGPU Driver:"
+            nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null || nvidia-smi
+            nvidia-smi -q 2>/dev/null | grep -i "license" || true
+            echo ""
+        fi
+
+        if command -v btop &>/dev/null; then
+            echo "btop (System Monitor):"
+            btop --version | head -n 1
+            echo ""
+        fi
+
+        if command -v nvtop &>/dev/null; then
+            echo "nvtop (GPU Monitor):"
+            nvtop --version
+            echo ""
+        fi
+
+        if command -v gcc &>/dev/null; then
+            echo "gcc Compiler:"
+            gcc --version | head -n 1
+            echo ""
+        fi
+
+        if command -v nvcc &>/dev/null; then
+            echo "CUDA:"
+            nvcc --version
+            echo ""
+        fi
+
+        if ensure_nvidia_ctk_for_current_shell >/dev/null 2>&1; then
+            echo "NVIDIA Container Toolkit:"
+            nvidia-ctk --version 2>/dev/null || echo "Installed"
+            echo ""
+        fi
+
+        if has_cudnn_available; then
+            echo "cuDNN Library:"
+            dpkg -l 2>/dev/null | grep -E 'cudnn|libcudnn' || true
+            echo ""
+        fi
+
+        if command -v ollama &>/dev/null; then
+            echo "Ollama:"
+            ollama --version 2>/dev/null || echo "Installed"
+            echo "API URL: http://127.0.0.1:11434"
+            echo "Commands:"
+            echo "  sudo systemctl start ollama"
+            echo "  sudo systemctl stop  ollama"
+            echo ""
+        fi
+
+        if command -v llama-server &>/dev/null; then
+            echo "llama.cpp:"
+            echo "llama-server installed at $(command -v llama-server)"
+            echo ""
+            echo "  -> Service commands:"
+            echo "     sudo systemctl start   llama-server"
+            echo "     sudo systemctl stop    llama-server"
+            echo "     sudo systemctl restart llama-server"
+            echo "     sudo systemctl status  llama-server"
+            echo "     sudo journalctl -u llama-server -f   # follow live logs"
+            if systemctl is-active --quiet llama-server 2>/dev/null; then
+                local _exec_line _llama_args _model_path _model_name _ctx_val _ctk_val _ngl_val
+                _exec_line=$(sudo grep -m1 '^ExecStart=' /etc/systemd/system/llama-server.service 2>/dev/null || true)
+                _llama_args=$(echo "$_exec_line" | grep -oE 'llama-server.*' | head -1 || true)
+                _model_path=$(echo "$_llama_args" | grep -oE -- '--model [^[:space:]]+' | awk '{print $2}' || true)
+                [[ -z "$_model_path" ]] && _model_path=$(echo "$_llama_args" | grep -oE -- '--hf-file [^[:space:]]+' | awk '{print $2}' || true)
+                [[ -n "$_model_path" ]] && _model_name=$(basename "$_model_path" 2>/dev/null || true)
+                _ctx_val=$(echo "$_llama_args" | grep -oE -- '-c [0-9]+' | awk '{print $2}' || true)
+                _ctk_val=$(echo "$_llama_args" | grep -oE -- '-ctk [^[:space:]]+' | awk '{print $2}' || true)
+                _ngl_val=$(echo "$_llama_args" | grep -oE -- '-ngl [0-9]+' | awk '{print $2}' || true)
+                echo ""
+                echo "  Running model: ${_model_name:-unknown}"
+                [[ -n "$_ctx_val" ]] && echo "  Context:       $_ctx_val tokens"
+                [[ -n "$_ctk_val" ]] && echo "  KV cache type: $_ctk_val"
+                [[ -n "$_ngl_val" ]] && echo "  GPU layers:    $_ngl_val"
+                echo "  API URL:       http://127.0.0.1:8080/v1"
+                echo "  API key:       sk-llamacpp"
+                echo ""
+                echo "  -> To test your live API server from the terminal, run:"
+                cat <<'CURLEOF'
+     curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
+       -H "Content-Type: application/json" \
+       -H "Authorization: Bearer sk-llamacpp" \
+       -d '{
+         "messages": [
+           {"role": "system", "content": "You are a helpful coding assistant."},
+           {"role": "user", "content": "Write a quick haiku about the Linux command line."}
+         ],
+         "temperature": 0.7,
+         "max_tokens": 150
+       }' | jq -r '.choices[0].message.content'
+CURLEOF
+            fi
+            echo ""
+        fi
+
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^open-webui$'; then
+            echo "Open-WebUI (Docker):"
+            local _webui_status
+            _webui_status=$(sudo docker inspect -f '{{.State.Status}}' open-webui 2>/dev/null || echo "unknown")
+            echo "Status: $_webui_status"
+            if command -v llama-server &>/dev/null; then
+                echo "  -> How to connect Open-WebUI to llama.cpp:"
+                echo "     1. Open WebUI in your browser (e.g., http://localhost:8081)"
+                echo "     2. Go to Profile (bottom left) -> Settings -> Connections"
+                echo "     3. Under 'OpenAI API', verify URL is 'http://127.0.0.1:8080/v1' and Key is 'sk-llamacpp'"
+                echo "     4. Click the 'Verify Connection' icon. Your model should automatically load!"
+            fi
+            echo ""
+        fi
+
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qi 'librechat'; then
+            echo "LibreChat (Docker):"
+            local _lc_status _lc_port="${LIBRECHAT_PORT:-3080}"
+            _lc_status=$(sudo docker inspect -f '{{.State.Status}}' LibreChat-api 2>/dev/null || echo "Running")
+            echo "Status: $_lc_status"
+            if sudo test -f "$TARGET_USER_HOME/LibreChat/.env"; then
+                local _rp
+                _rp=$(sudo grep "^PORT=" "$TARGET_USER_HOME/LibreChat/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '\r')
+                [[ -n "$_rp" ]] && _lc_port="$_rp"
+            fi
+            echo "  -> How to access LibreChat:"
+            echo "     URL: http://${_lan_ip:-localhost}:${_lc_port}"
+            echo "     1. Open LibreChat in your browser"
+            echo "     2. Click 'Register' to create your admin account."
+            echo "  Commands:"
+            echo "     cd $TARGET_USER_HOME/LibreChat && docker compose up -d    # start"
+            echo "     cd $TARGET_USER_HOME/LibreChat && docker compose down      # stop"
+            echo ""
+        fi
+
+        # --- OpenClaw ---
+        local _oc_bin
+        _oc_bin=$(sudo -u "$TARGET_USER" bash -c \
+            "$_nvm_cmd; command -v openclaw 2>/dev/null || true" 2>/dev/null || true)
+        if [[ -n "$_oc_bin" ]] || sudo test -f "$TARGET_USER_HOME/.local/bin/openclaw"; then
+            echo "OpenClaw:"
+            sudo -u "$TARGET_USER" bash -c \
+                "$_nvm_cmd; openclaw --version 2>/dev/null || echo 'Installed'" 2>/dev/null || echo "Installed"
+
+            if sudo test -f "$TARGET_USER_HOME/.openclaw/openclaw.json"; then
+                local _oc_port _oc_bind
+                _oc_port=$(sudo jq -r '.gateway.port // 18789' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null || echo "18789")
+                _oc_bind=$(sudo jq -r '.gateway.bind // "loopback"' "$TARGET_USER_HOME/.openclaw/openclaw.json" 2>/dev/null || echo "loopback")
+                echo "  Port:   $_oc_port"
+                echo "  Bind:   $_oc_bind"
+                echo "  Config: $TARGET_USER_HOME/.openclaw/openclaw.json"
+                echo ""
+                echo "  -> Service commands (as user $TARGET_USER):"
+                echo "     systemctl --user start  openclaw-gateway"
+                echo "     systemctl --user stop   openclaw-gateway"
+                echo "     systemctl --user status openclaw-gateway"
+                echo ""
+                echo "  -> Control UI access:"
+                echo "     Direct (LAN): http://${_lan_ip:-<server-ip>}:${_oc_port}/"
+                echo ""
+                echo "     SSH tunnel (from a remote machine):"
+                echo "     ssh -L ${_oc_port}:localhost:${_oc_port} [admin-user]@${_lan_ip:-<server-ip>}"
+                echo "     Then open:  http://localhost:${_oc_port}/"
+                echo ""
+                # Try to extract the current session token from today's log
+                local _oc_log _oc_token
+                _oc_log="/tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+                _oc_token=""
+                if sudo test -f "$_oc_log" 2>/dev/null; then
+                    _oc_token=$(sudo grep -oE '#token=[a-f0-9]+' "$_oc_log" 2>/dev/null |
+                        tail -1 | sed 's/#token=//' || true)
+                fi
+                if [[ -n "$_oc_token" ]]; then
+                    echo "     Current session token URL:"
+                    echo "     http://localhost:${_oc_port}/#token=${_oc_token}"
+                    echo "     (Token changes on each service restart)"
+                else
+                    echo "     Token: run the command below to get the current token:"
+                fi
+                echo "     sudo -u $TARGET_USER bash -c \\"
+                echo "       'XDG_RUNTIME_DIR=/run/user/\$(id -u $TARGET_USER) openclaw status' | grep -i token"
+            fi
+            echo ""
+        fi
+
+        # --- Hostname resolution ---
+        echo "System Hostname Resolution:"
+        local _hn
+        _hn=$(hostname)
+        if hostname -i &>/dev/null; then
+            echo "  Hostname '$_hn' resolves correctly ($(hostname -i | awk '{print $1}' | head -n 1))."
+        else
+            echo "  WARNING: Hostname '$_hn' does not resolve."
+            echo "  Add '127.0.1.1 $_hn' to /etc/hosts to prevent network and sudo delays."
+        fi
+        echo ""
+
+        if [[ -n "${TARGET_USER:-}" ]]; then
+            echo "Target user: $TARGET_USER  ($TARGET_USER_HOME)"
+            echo ""
+        fi
+
+        # --- Next steps (mirrors print_final_summary post-install advice) ---
+        local _ua=""
+        if [[ ${#POST_INSTALL_ACTIONS[@]} -gt 0 ]]; then
+            _ua=$(printf '%s\n' "${POST_INSTALL_ACTIONS[@]}" | sort -u | tr '\n' ' ')
+        fi
+        if [[ -n "$_ua" ]]; then
+            echo "===== Next Steps & Important Information ====="
+            echo ""
+            if [[ "$_ua" == *"docker"* ]]; then
+                echo "Docker group change:"
+                echo "  To use Docker without 'sudo' immediately: newgrp docker"
+                echo "  Or log out and back in to apply the group change globally."
+                echo "  Then test: docker run hello-world"
+                echo ""
+            fi
+            if [[ "$_ua" == *"zsh"* ]]; then
+                echo "Shell change:"
+                echo "  Your default shell was changed to Zsh."
+                echo "  Open a new terminal, or run: source $TARGET_USER_HOME/.zshrc"
+                echo ""
+            elif [[ "$_ua" == *"nvm"* || "$_ua" == *"brew"* || "$_ua" == *"openclaw"* ]]; then
+                local _rc=""
+                sudo test -f "$TARGET_USER_HOME/.zshrc" && _rc="$TARGET_USER_HOME/.zshrc"
+                sudo test -f "$TARGET_USER_HOME/.bashrc" && [[ -z "$_rc" ]] && _rc="$TARGET_USER_HOME/.bashrc"
+                echo "To activate newly installed commands for '$TARGET_USER' (like nvm, node, gemini), they must either:"
+                echo "  1. Open a NEW terminal window."
+                [[ -n "$_rc" ]] && echo "  2. OR, run the following command in your CURRENT terminal:" &&
+                    echo "source ${_rc}"
+                echo ""
+            fi
+            if [[ "$_ua" == *"ufw"* ]]; then
+                echo "IMPORTANT: Firewall rules have been configured, but UFW is NOT enabled by default."
+                echo "The following UFW rules have been prepared:"
+                sudo ufw status 2>/dev/null | grep -E 'ALLOW|DENY' | sed 's/^/  - /' || true
+                echo "To enable UFW: sudo ufw enable"
+                echo ""
+            fi
+            if [[ "$_ua" == *"reboot"* ]]; then
+                echo "Reboot recommended:"
+                echo "  A system reboot is recommended to ensure all NVIDIA drivers are loaded correctly."
+                echo ""
+            fi
+        fi
+    } >"$out_file"
+    print_success "Settings saved → $out_file"
+}
+
+# --- Edit llama.cpp Service Parameters ---
+#
+# Lets the user pick a new model and tune context/memory settings
+# on a live llama-server.service installation.  On confirm:
+#   1. Stops the running service
+#   2. Rewrites /etc/systemd/system/llama-server.service
+#   3. systemctl daemon-reload && enable --now
+#
+edit_llama_server_parameters() {
+    # Detect CUDA variant from the existing service unit so we know
+    # whether to pass -ngl and --fit.  Check both the Environment= line
+    # (newer units) and -ngl in ExecStart (older units that omit the env line).
+    local unit_file="/etc/systemd/system/llama-server.service"
+    local is_cuda="n"
+    if sudo grep -qE 'LD_LIBRARY_PATH.*cuda|-ngl [0-9]' "$unit_file" 2>/dev/null; then
+        is_cuda="y"
+    fi
+
+    local backend_variant="llama_cpu"
+    [[ "$is_cuda" == "y" ]] && backend_variant="llama_cuda"
+
+    # Reset globals so configure_llm_model_prompt starts fresh.
+    # Pre-seed ngl/fit from the existing unit file so configure_context_memory
+    # shows the current values as defaults in item 6.
+    LLM_DEFAULT_MODEL_CHOICE=""
+    SELECTED_MODEL_REPO=""
+    LLAMACPP_MODEL_REPO=""
+    OLLAMA_PULL_MODEL=""
+    LLAMA_CTX_SIZE=""
+    LLAMA_CACHE_TYPE_K=""
+    LLAMA_CACHE_TYPE_V=""
+    LLAMA_CPU_MOE="y"
+    LLAMA_FLASH_ATTN="n"
+    LLAMA_UBATCH=""
+    LLAMA_VRAM_TIER=""
+    LLAMA_NGL=99
+    LLAMA_FIT="n"
+    LLAMA_FIT_CTX=""
+    LLAMA_COMPONENT_ACTION="repair" # needed so llama_requires_model_selection returns true
+
+    # Pre-fill ngl/fit from the existing unit so the context menu shows current values
+    if [[ "$is_cuda" == "y" ]]; then
+        local cur_unit_line cur_ngl_hint cur_fit_hint
+        cur_unit_line=$(sudo grep -m1 '^ExecStart=' "$unit_file" 2>/dev/null || true)
+        cur_ngl_hint=$(echo "$cur_unit_line" | grep -oE -- '-ngl [0-9]+' | awk '{print $2}' || true)
+        cur_fit_hint=$(echo "$cur_unit_line" | grep -oE -- '--fit (on|off)' | awk '{print $2}' || true)
+        [[ -n "$cur_ngl_hint" ]] && LLAMA_NGL="$cur_ngl_hint"
+        [[ "$cur_fit_hint" == "on" ]] && LLAMA_FIT="y"
+    fi
+
+    clear
+    print_status_header
+    echo -e "\n\e[1;36m── Edit llama.cpp Server Parameters ─────────────────────────\e[0m"
+    echo -e "Current service unit: \e[0;33m${unit_file}\e[0m"
+    echo -e "GPU mode detected:    \e[0;33m${backend_variant}\e[0m"
+    echo ""
+
+    # Step 1: model selection (re-uses the same prompt as initial install)
+    configure_llm_model_prompt "$backend_variant"
+    if [[ -z "$LLM_DEFAULT_MODEL_CHOICE" ]]; then
+        echo "No model selected — edit cancelled."
+        return 1
+    fi
+
+    # Step 2: context, memory, and GPU layers (item 6 in the box for CUDA)
+    configure_context_memory "$backend_variant"
+
+    # Step 3: build args from globals set by configure_context_memory
+    local hf_args
+    hf_args=$(build_llama_hf_args)
+
+    local llama_host_args="--port 8080"
+    if [[ "$is_cuda" == "y" ]]; then
+        if [[ "$LLAMA_FIT" == "y" ]]; then
+            llama_host_args+=" --fit on --fit-ctx ${LLAMA_FIT_CTX}"
+        else
+            llama_host_args+=" -ngl ${LLAMA_NGL}"
+        fi
+    fi
+
+    # Replicate the expose-LLM flag from existing unit (keep --host if already set)
+    if sudo grep -q -- '--host 0.0.0.0' "$unit_file" 2>/dev/null; then
+        llama_host_args+=" --host 0.0.0.0"
+    fi
+
+    [[ -n "$LLAMA_CTX_SIZE" ]] && llama_host_args+=" -c $LLAMA_CTX_SIZE"
+    [[ -n "$LLAMA_CACHE_TYPE_K" ]] && llama_host_args+=" -ctk $LLAMA_CACHE_TYPE_K"
+    [[ -n "$LLAMA_CACHE_TYPE_V" ]] && llama_host_args+=" -ctv $LLAMA_CACHE_TYPE_V"
+    [[ "$LLAMA_FLASH_ATTN" == "y" && "$is_cuda" == "y" ]] && llama_host_args+=" --flash-attn on"
+    [[ -n "$LLAMA_UBATCH" ]] && llama_host_args+=" --ubatch-size $LLAMA_UBATCH"
+    [[ "$LLAMA_CPU_MOE" == "y" ]] && llama_host_args+=" --cpu-moe"
+
+    # Download model if it's an HF repo that isn't already cached
+    if [[ "$hf_args" == *"--hf-repo"* ]]; then
+        print_info "Checking model cache…"
+        local downloaded_model
+        downloaded_model=$(download_hf_model_with_progress "$hf_args" "$(get_llama_cache_path)")
+        if [[ -n "$downloaded_model" ]]; then
+            hf_args="--model $downloaded_model"
+        fi
+    fi
+
+    # Step 5: confirm before touching the live service
+    echo ""
+    echo -e "\e[1;36m── Confirm new service configuration ─────────────────────────\e[0m"
+    echo -e "  Model args:  \e[0;33m${hf_args}\e[0m"
+    echo -e "  Server args: \e[0;33m${llama_host_args}\e[0m"
+    echo ""
+    read -rp "Apply and restart llama-server? [y/N]: " apply_choice
+    if [[ "$apply_choice" != "y" && "$apply_choice" != "Y" ]]; then
+        echo "Edit cancelled — service unchanged."
+        return 0
+    fi
+
+    # Step 6: rewrite the systemd unit
+    print_info "Stopping llama-server…"
+    sudo systemctl stop llama-server 2>/dev/null || true
+
+    local env_cuda=""
+    [[ "$is_cuda" == "y" ]] && env_cuda="Environment=\"LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64\""
+
+    # shellcheck disable=SC2090
+    sudo tee "$unit_file" >/dev/null <<EDITEOF
+[Unit]
+Description=Llama.cpp Server
+After=network.target
+
+[Service]
+User=$TARGET_USER
+WorkingDirectory=$TARGET_USER_HOME
+Environment="HOME=$TARGET_USER_HOME"
+Environment="TARGET_USER_HOME=$TARGET_USER_HOME"
+Environment="LLAMA_CACHE=$(get_llama_cache_path)"
+$env_cuda
+ExecStart=/bin/bash -c 'source $TARGET_USER_HOME/.env.secrets 2>/dev/null; export HOME="$TARGET_USER_HOME"; export LLAMA_CACHE="$(get_llama_cache_path)"; mkdir -p "$TARGET_USER_HOME/.cache"; exec /usr/local/bin/llama-server $hf_args $llama_host_args >> "$(get_llama_runtime_log_path)" 2>&1'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EDITEOF
+
+    print_info "Reloading systemd daemon and restarting service…"
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now llama-server
+    echo ""
+    sudo systemctl status llama-server --no-pager || true
+    echo ""
+
+    # Update OpenClaw config to match new context size (if installed)
+    local openclaw_config="$TARGET_USER_HOME/.openclaw/openclaw.json"
+    if sudo test -f "$openclaw_config" && [[ -n "$LLAMA_CTX_SIZE" ]]; then
+        local oc_ctx="$LLAMA_CTX_SIZE"
+        [[ "$oc_ctx" -lt 65536 ]] && oc_ctx=65536
+        local tmp_oc
+        tmp_oc=$(sudo mktemp)
+        local oc_jq=".agents.defaults.compaction.reserveTokensFloor = 20000"
+        oc_jq="$oc_jq | (.providers // {}) as \$p | if (\$p | keys | map(select(startswith(\"custom-127\"))) | length) > 0 then (.providers[(.providers | keys | map(select(startswith(\"custom-127\"))))[0]].models[0].contextWindow = $oc_ctx) else . end"
+        local oc_out
+        oc_out=$(sudo jq "$oc_jq" "$openclaw_config") || true
+        if [[ -n "$oc_out" ]] && echo "$oc_out" | jq empty 2>/dev/null; then
+            echo "$oc_out" | sudo tee "$tmp_oc" >/dev/null &&
+                sudo mv "$tmp_oc" "$openclaw_config" &&
+                sudo chown "$TARGET_USER":"$TARGET_USER" "$openclaw_config"
+            print_success "OpenClaw contextWindow updated to ${oc_ctx}."
+        fi
+    fi
+
+    print_success "llama.cpp service updated and running."
+    return 0
 }
 
 # --- Main Menu ---
@@ -4214,6 +5130,10 @@ main() {
         echo "---------------------------------"
         echo "Use numbers [1-3] to toggle a goal. Press 'a' to select all."
         echo "Press 'c' to continue to the detailed menu, or 'q' to quit."
+        if systemctl list-unit-files 2>/dev/null | grep -q '^llama-server.service'; then
+            echo "Press 'e' to edit llama.cpp server parameters."
+        fi
+        echo "Press 's' to save current settings to ~/AI-settings.txt."
         read -p "Your choice: " goal_choice
 
         if [[ "$goal_choice" =~ ^[1-3]$ ]]; then
@@ -4221,6 +5141,18 @@ main() {
             GOAL_SELECTIONS[$index]=$((1 - GOAL_SELECTIONS[$index]))
         elif [[ "$goal_choice" == "a" || "$goal_choice" == "A" ]]; then
             GOAL_SELECTIONS=(1 1 1)
+        elif [[ "$goal_choice" == "s" || "$goal_choice" == "S" ]]; then
+            save_ai_settings_file
+            echo ""
+            read -p "Press Enter to return to the menu…" _
+        elif [[ "$goal_choice" == "e" || "$goal_choice" == "E" ]]; then
+            if systemctl list-unit-files 2>/dev/null | grep -q '^llama-server.service'; then
+                edit_llama_server_parameters
+                echo ""
+                read -p "Press Enter to return to the menu…" _
+            else
+                echo -e "\nllama-server.service is not installed." && sleep 1
+            fi
         elif [[ "$goal_choice" == "c" || "$goal_choice" == "C" ]]; then
             if [[ ${GOAL_SELECTIONS[0]} -eq 0 && ${GOAL_SELECTIONS[1]} -eq 0 && ${GOAL_SELECTIONS[2]} -eq 0 ]]; then
                 echo -e "\nPlease select at least one goal before continuing." && sleep 1
