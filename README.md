@@ -8,7 +8,7 @@ It will install and run Ollama or compile Llama.cpp with CUDA (Single or Multi-G
 
 At the end you have working and configured Openclaw with Ollama or Llama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
 
-You still need to harden and secure all of them if you are running those on a VPS. 
+You still need to harden and secure all of them, especially Openclaw, if you are running all of this on a VPS. 
 
 Once LLama.CPP is installed you can use the script to quickly reconfigure its parameters like context window (-ctx), MoE (), CPU Ram offloading (-ngl)
 
