@@ -1,10 +1,16 @@
 # Ubuntu Local AI, Ollama, Llama.cpp CUDA, LibreChat & OpenClaw with Nvidia vGPU driver & token and latest CUDA Prep and Installation Script
 
-This script automates the setup and configuration of a fresh Ubuntu LTS system to run Ollama or Llama.cpp with CUDA, automatically selects and loads the best model for your hardware, and configures powerful Chat UIs (Open-WebUI and LibreChat). It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use AI development environment.
+This script automates the setup and configuration of a fresh Ubuntu LTS Server system to turn-key Openclaw, Open Web UI or Librechat UI with local models. 
 
-It will download and install the Nvidia Enterprise vGPU drivers and the License token automatically. Then install latest CUDA and CUDNN.
+It will download and install the Nvidia Enterprise vGPU drivers (or regular Nvidia GPU Drivers) and install the Nividia Enterprise License token automatically. Then install latest CUDA, Nvidia Container Toolkit and CuDNN.
 
-At the end you have fully configured Ollama or Llama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
+It will install and run Ollama or compile Llama.cpp with CUDA (Single or Multi-GPU), automatically selects and loads the best model for your hardware, and configures powerful Chat UIs (Open-WebUI and LibreChat). It provides an interactive menu to install essential developer tools, software stacks, and configurations, turning a new OS into a ready-to-use AI development environment.
+
+At the end you have working and configured Openclaw with Ollama or Llama.CPP models. OpenWebUI, Librechat and OpenClaw pointing to the local model. Ready to go. 
+
+You still need to harden and secure all of them if you are running those on a VPS. 
+
+Once LLama.CPP is installed you can use the script to quickly reconfigure its parameters like context window (-ctx), MoE (), CPU Ram offloading (-ngl)
 
 ## Interactive Menus
 
@@ -38,6 +44,28 @@ Press 'i' to install selected, or 'q' to quit.
 
  [ ] 16. Install OpenClaw
 ```
+
+
+**Reconfigure LLama.CPP on the fly:**
+```text
+┌──────────────────────────────────────────────────────────┐
+│  1. Context size:     [131072] tokens                    │
+│  2. KV cache type:    [q4_0]  (K and V matched)          │
+│  3. CPU MoE offload:  [on]                               │
+│  4. Flash attention:  [on]                               │
+│  5. Ubatch size:      [512]                              │
+│  6. GPU layers:       [99]  (-ngl / --fit)               │
+│                                                          │
+│  Model weights:    4 GB                                  │
+│  KV cache:         2.4 GB                                │
+│  Runtime overhead: ~0.5 GB                               │
+│  ───────────────                                         │
+│  Estimated total:  6.9 / 8 GB  ✅                        │
+│                                                          │
+│  [c] Confirm  [1-6] Change  [d] Defaults                 │
+└──────────────────────────────────────────────────────────┘
+```
+
 
 **Hardware-Aware Configuration:**
 The script dynamically detects your system resources. For example:
@@ -76,7 +104,7 @@ The script dynamically detects your system resources. For example:
 
 ## Prerequisites
 
-- A fresh installation of Ubuntu LTS (tested on 22.04 and later).
+- A fresh installation of Ubuntu LTS Server (tested on 22.04 and later).
 - Internet connection.
 
 ## Quick Start
@@ -141,24 +169,35 @@ Example:
 ```
 
 ## Feedback &Commercial Use
-Let me know if you find this useful.
+Let me know if you find this useful and if you encounter any bugs or issues.
+
+If you use this at work or to make money, please consider expensing a sponsor contribution by clicking the sponsor button above.
+
+I am working on a provate V2.0 with support for:
+- Nvidia NGC Supplort
+- vLLM                                          - https://github.com/vllm-project/vllm
+- Manifest LLM Model Router                     - https://github.com/mnfst/manifest
+- Infisical - Local API Key Secrets Managqement - https://github.com/infisical/infisical
+
+Let me know if you are intersted. 
+
+
 Let me know if I should add other packages.
-If you use this at work, please expense a sponsor payment by clicking the sponsor button above.. 
+Here are some other packages thatI am considering:
 
-Here are some I am considering:
+|| Tools | Stars | Category | Why |
+|---|---:|---|---|
+| Qdrant | 29K | Vector DB | Every RAG tool needs one |
+| SearXNG | 27K | Web Search | Gives AI agents private web search, used by Open-WebUI |
+| n8n | 183K | Automation | Self-hosted Zapier with native AI agent nodes |
+| AnythingLLM | 54K | RAG/UI | Instant doc chat on top of Ollama, no extra setup |
+| faster-whisper | 14K | STT | used by Open-WebUI STT |
+| Kokoro TTS |  | HF TTS | Near-ElevenLabs quality, 82M params, Docker wrapper available |
+| Aider | 42K | Coding | terminal AI pair programmer |
+| OpenHands | 70K | Agent | Autonomous coding agent, sandboxed Docker |
+| ComfyUI | 108K | Image | Node-graph Stable Diffusion/FLUX, GPU required |
+| Tabby | 32K | Coding | Self-hosted GitHub Copilot server for VS Code/JetBrains |
 
-Tool	    Stars	    Category	Why
-Qdrant	        29K	    Vector DB	Every RAG tool needs one. docker run qdrant/qdrant
-SearXNG	        27K	    Web Search	Gives AI agents private web search, used by Open-WebUI
-n8n	            183K	Automation	Self-hosted Zapier with native AI agent nodes
-AnythingLLM	    54K	    RAG/UI	    Instant doc chat on top of Ollama, no extra setup
-vLLM	        75K	    Inference	Production-grade multi-user GPU inference, OpenAI-compatible
-faster-whisper	14K	    STT	        pip install speech-to-text, used by Open-WebUI STT
-Kokoro TTS	    HF	    TTS	        Near-ElevenLabs quality, 82M params, Docker wrapper available
-Aider	        42K	    Coding	    pip install aider-chat — terminal AI pair programmer
-OpenHands	    70K	    Agent	    Autonomous coding agent, sandboxed Docker
-ComfyUI	        108K	Image	    Node-graph Stable Diffusion/FLUX, GPU required
-Tabby	        32K	    Coding	    Self-hosted GitHub Copilot server for VS Code/JetBrains
 
 ## License
 

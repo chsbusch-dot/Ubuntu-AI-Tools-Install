@@ -3798,9 +3798,9 @@ EOF
             rm -f "$su_stderr_file"
             echo ""
             echo -e "\e[1;33m⚠️  OpenClaw setup exited with an error (code: $su_exit_code).\e[0m"
-            echo    "   Review the output above for details."
-            echo    "   If you see a TypeError, it may be a transient OpenClaw bug —"
-            echo    "   you can retry here, or press N and run 'openclaw onboard' manually later."
+            echo "   Review the output above for details."
+            echo "   If you see a TypeError, it may be a transient OpenClaw bug —"
+            echo "   you can retry here, or press N and run 'openclaw onboard' manually later."
             echo ""
             read -rp "Retry OpenClaw setup? [Y/n]: " retry_choice
             if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
