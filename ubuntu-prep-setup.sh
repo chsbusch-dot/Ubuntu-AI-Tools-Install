@@ -1109,9 +1109,34 @@ EOF"
     print_success "Google Gemini CLI installed globally."
 }
 
-# 7. Install NVIDIA vGPU Driver
-install_vgpu_driver_from_link() {
-    print_header "Installing NVIDIA vGPU Driver and Token"
+# 7. Install NVIDIA GPU Driver (consumer RTX or vGPU/custom .deb)
+install_nvidia_driver() {
+    print_header "Installing NVIDIA GPU Driver"
+
+    echo ""
+    echo -e "\e[1;36mWhat type of NVIDIA driver do you need?\e[0m"
+    echo "  1) Consumer GPU  (GeForce RTX / GTX) — install from Ubuntu driver repository"
+    echo "  2) vGPU / special drivers            — install from a custom .deb file via URL"
+    echo ""
+    local _gpu_drv_type
+    read -rp "Your choice [1/2]: " _gpu_drv_type
+
+    if [[ "$_gpu_drv_type" == "1" ]]; then
+        print_info "Installing NVIDIA consumer driver via ubuntu-drivers..."
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common
+        sudo ubuntu-drivers install --gpgpu
+        print_success "NVIDIA driver installed successfully."
+        POST_INSTALL_ACTIONS+=("reboot")
+        return 0
+    fi
+
+    if [[ "$_gpu_drv_type" != "2" ]]; then
+        echo "❌ Invalid choice. Skipping NVIDIA driver installation."
+        return 1
+    fi
+
+    # --- vGPU / custom driver path ---
+    print_header "Installing NVIDIA vGPU / Custom Driver and Token"
 
     local vgpu_driver_url=""
     local vgpu_token_url=""
@@ -4036,7 +4061,7 @@ check_installations() {
         MASTER_INSTALLED_STATE[6]=1
     fi
 
-    # 7. vGPU Driver (index 7)
+    # 7. NVIDIA GPU Driver (index 7)
     if command -v nvidia-smi &>/dev/null; then
         print_info "Found existing NVIDIA driver (nvidia-smi)."
         MASTER_INSTALLED_STATE[7]=1
@@ -4222,7 +4247,7 @@ print_final_summary() {
     fi
 
     if command -v nvidia-smi &>/dev/null; then
-        print_info "NVIDIA GPU/vGPU Driver:"
+        print_info "NVIDIA GPU Driver:"
         nvidia-smi --query-gpu=driver_version,name --format=csv,noheader || nvidia-smi
         nvidia-smi -q | grep -i "license" || true # display-only: may not match
         echo ""
@@ -4499,7 +4524,7 @@ save_ai_settings_file() {
         fi
 
         if command -v nvidia-smi &>/dev/null; then
-            echo "NVIDIA GPU/vGPU Driver:"
+            echo "NVIDIA GPU Driver:"
             nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null || nvidia-smi
             nvidia-smi -q 2>/dev/null | grep -i "license" || true
             echo ""
@@ -4985,7 +5010,7 @@ main() {
         "Install NVM, Node.js & NPM"
         "Install Homebrew"
         "Install Google Gemini CLI"
-        "Install NVIDIA vGPU Driver"
+        "Install NVIDIA GPU Driver"
         "Install btop (System Monitor)"
         "Install nvtop (GPU Monitor)"
         "Install CUDA"
@@ -5004,7 +5029,7 @@ main() {
         install_nvm_node
         install_homebrew
         install_gemini_cli
-        install_vgpu_driver_from_link
+        install_nvidia_driver
         install_btop
         install_nvtop
         install_cuda_toolkit
@@ -5043,7 +5068,7 @@ main() {
         "4 6 15"     # NVM(4)      <- Gemini(6), OpenClaw(15)
         "5 15"       # Homebrew(5) <- OpenClaw(15)
         "3 12"       # Docker(3)   <- NVIDIA CTK(12)
-        "7 10 12 13" # vGPU(7)   <- CUDA(10), CTK(12), cuDNN(13)
+        "7 10 12 13" # NV driver(7) <- CUDA(10), CTK(12), cuDNN(13)
         "11 10"      # gcc(11)     <- CUDA(10)
     )
 
@@ -5053,7 +5078,7 @@ main() {
             3) echo "Docker" ;;
             4) echo "NVM/Node.js" ;;
             5) echo "Homebrew" ;;
-            7) echo "NVIDIA vGPU Driver" ;;
+            7) echo "NVIDIA GPU Driver" ;;
             11) echo "gcc compiler" ;;
             *) echo "item $1" ;;
         esac
@@ -5145,7 +5170,7 @@ main() {
     local GOAL_SELECTIONS=(0 0 0)
     local GOAL_OPTIONS=(
         "OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
-        "VGPU Setup (NVIDIA Driver, CUDA, Container Toolkit, cuDNN)"
+        "NVIDIA GPU Setup (Driver, CUDA, Container Toolkit, cuDNN)"
         "Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
     )
 
@@ -5583,7 +5608,7 @@ main() {
     fi
 
     if [[ "${POST_INSTALL_ACTIONS[*]}" == *"reboot"* ]]; then
-        echo -e "\n\e[1;33mA system reboot is highly recommended to ensure all drivers (like NVIDIA vGPU) are loaded correctly.\e[0m"
+        echo -e "\n\e[1;33mA system reboot is highly recommended to ensure all drivers (like NVIDIA GPU drivers) are loaded correctly.\e[0m"
         read -p "Do you want to reboot now? [y/N]: " reboot_choice
         if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
             print_info "Rebooting system..."
