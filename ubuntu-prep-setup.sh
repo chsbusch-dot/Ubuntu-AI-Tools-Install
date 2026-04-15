@@ -705,7 +705,13 @@ setup_env_secrets() {
 
 # --- API Key Placeholders ---
 # Uncomment and fill in the values for the services you use.
+#Set Your path to llama.cpp model custom folder
+export LLAMA_CACHE="$HOME/llama.cpp/models/models-user"
 
+# Export timezone
+export TZ="${GLOBAL_SYSTEM_TIMEZONE:-America/Los_Angeles}"
+
+# Uncomment these as needed.
 # export GITHUB_TOKEN="your_github_token"
 # export AWS_SECRET_ACCESS_KEY="your_aws_secret"
 # export OPENAI_API_KEY="your_openai_key"
@@ -723,8 +729,7 @@ setup_env_secrets() {
 # export ESXI_USER="root"
 # export ESXI_PASSWORD="your_esxi_password"
 # export OLLAMA_ALLOWED_ORIGINS="https://chat.yourdomain.com,http://localhost:8081"
-export LLAMA_CACHE="$HOME/llama.cpp/models/models-user"
-export TZ="${GLOBAL_SYSTEM_TIMEZONE:-America/Los_Angeles}"
+
 EOF
         sudo chmod 600 "$TARGET_USER_HOME/.env.secrets"
     fi
@@ -3770,8 +3775,8 @@ EOF
             echo "---------------------------------"
             echo "Use numbers [1-9] to toggle.  'a' = select all,  'c' = confirm."
             read -rp "Your choice: " sec_choice
-            if [[ "$sec_choice" =~ ^[0-9]+$ ]] && \
-               [ "$sec_choice" -ge 1 ] && [ "$sec_choice" -le "${#sec_options[@]}" ]; then
+            if [[ "$sec_choice" =~ ^[0-9]+$ ]] &&
+                [ "$sec_choice" -ge 1 ] && [ "$sec_choice" -le "${#sec_options[@]}" ]; then
                 local idx=$((sec_choice - 1))
                 sec_selections[$idx]=$((1 - sec_selections[$idx]))
             elif [[ "$sec_choice" == "a" || "$sec_choice" == "A" ]]; then
@@ -3942,8 +3947,8 @@ EOF
         if [[ ${sec_selections[4]} -eq 1 ]]; then
             print_info "Running OpenClaw Deep Security Audit..."
             local _oc_audit_env="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"; export PATH=\"$TARGET_USER_HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:\$PATH\""
-            sudo -u "$TARGET_USER" bash -c "$_oc_audit_env; openclaw security audit --deep" \
-                || echo -e "⚠️ \e[1;33mAudit returned warnings/errors, please review.\e[0m"
+            sudo -u "$TARGET_USER" bash -c "$_oc_audit_env; openclaw security audit --deep" ||
+                echo -e "⚠️ \e[1;33mAudit returned warnings/errors, please review.\e[0m"
             echo ""
             read -n 1 -s -r -p "Press any key to continue..."
             echo ""
