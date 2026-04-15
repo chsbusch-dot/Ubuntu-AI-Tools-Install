@@ -3709,41 +3709,6 @@ EOF
 EOF
     )
 
-    # Create ~/.openclaw/.env from ~/.env.secrets NOW (before su) so the file
-    # exists for both the OpenClaw installer and openclaw onboard to read.
-    print_info "Pre-populating ~/.openclaw/.env from ~/.env.secrets..."
-    sudo -u "$TARGET_USER" mkdir -p "$TARGET_USER_HOME/.openclaw"
-    if sudo test -f "$TARGET_USER_HOME/.env.secrets"; then
-        # Extract non-empty API keys/tokens; strip 'export ' prefix;
-        # filter blank values (KEY="" or KEY=''); add ANTHROPIC_API_KEY
-        # alias when only CLAUDE_API_KEY is present (OpenClaw naming).
-        local env_content
-        env_content=$(sudo grep -E '^export [A-Z_]*(API_KEY|TOKEN)[^=]*=' \
-            "$TARGET_USER_HOME/.env.secrets" 2>/dev/null |
-            sed 's/^export //' |
-            grep -v '=""$' |
-            grep -v "=''$" |
-            grep -vE '=[[:space:]]*$' ||
-            true)
-        if [[ "$env_content" == *'CLAUDE_API_KEY='* ]] &&
-            [[ "$env_content" != *'ANTHROPIC_API_KEY='* ]]; then
-            local _claude_val
-            _claude_val=$(printf '%s\n' "$env_content" | grep '^CLAUDE_API_KEY=' | head -1 | cut -d'=' -f2-)
-            env_content="${env_content}"$'\n'"ANTHROPIC_API_KEY=${_claude_val}"
-        fi
-        printf '%s\n' "$env_content" | grep -v '^[[:space:]]*$' |
-            sudo -u "$TARGET_USER" tee "$TARGET_USER_HOME/.openclaw/.env" >/dev/null || true
-        sudo chmod 600 "$TARGET_USER_HOME/.openclaw/.env"
-        sudo chown "$TARGET_USER":"$TARGET_USER" "$TARGET_USER_HOME/.openclaw/.env"
-        local env_line_count
-        env_line_count=$(printf '%s\n' "$env_content" | grep -c '[^[:space:]]' || echo 0)
-        print_info ".openclaw/.env written (${env_line_count} key(s) from .env.secrets)."
-    else
-        print_info "No .env.secrets found — ~/.openclaw/.env will be empty; you will be prompted for API keys."
-        sudo -u "$TARGET_USER" touch "$TARGET_USER_HOME/.openclaw/.env"
-        sudo chmod 600 "$TARGET_USER_HOME/.openclaw/.env"
-    fi
-
     print_info "Switching to '$TARGET_USER' to install and onboard OpenClaw."
     echo -e "\e[1;33mYou will be prompted for the password for user '$TARGET_USER'.\e[0m"
 
