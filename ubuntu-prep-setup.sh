@@ -3771,20 +3771,41 @@ EOF
     echo -e "\e[1;35m=================================================================\e[0m\n"
 
     while true; do
-        # Temporarily disable exit-on-error for the su command
+        # Temporarily disable exit-on-error for the su command.
+        # Capture stderr so we can tell the difference between an su authentication
+        # failure and an openclaw internal error (both exit non-zero).
         set +e
-        su - "$TARGET_USER" -c "$openclaw_command"
+        local su_stderr_file
+        su_stderr_file=$(mktemp)
+        su - "$TARGET_USER" -c "$openclaw_command" 2> >(tee "$su_stderr_file" >&2)
         local su_exit_code=$?
-        set -e # Re-enable exit-on-error
+        set -e
 
         if [ $su_exit_code -eq 0 ]; then
+            rm -f "$su_stderr_file"
             break # Exit the loop on success
-        else
-            read -p "Authentication failed. Do you want to try again? [Y/n]: " retry_choice
+        fi
+
+        # Differentiate: su auth failure vs openclaw crash
+        if grep -qi "authentication failure\|incorrect password\|su: " "$su_stderr_file" 2>/dev/null; then
+            rm -f "$su_stderr_file"
+            read -rp "❌ Authentication failed — wrong password? Try again? [Y/n]: " retry_choice
             if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                 echo "❌ Aborting OpenClaw installation."
-                # The temporary sudoers file will be removed by the cleanup step after this function returns.
-                return 1 # Exit the function with an error status
+                return 1
+            fi
+        else
+            rm -f "$su_stderr_file"
+            echo ""
+            echo -e "\e[1;33m⚠️  OpenClaw setup exited with an error (code: $su_exit_code).\e[0m"
+            echo    "   Review the output above for details."
+            echo    "   If you see a TypeError, it may be a transient OpenClaw bug —"
+            echo    "   you can retry here, or press N and run 'openclaw onboard' manually later."
+            echo ""
+            read -rp "Retry OpenClaw setup? [Y/n]: " retry_choice
+            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
+                echo "⚠️  Skipping OpenClaw onboarding. Run 'openclaw onboard' manually when ready."
+                return 1
             fi
         fi
     done
