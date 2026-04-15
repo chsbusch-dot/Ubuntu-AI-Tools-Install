@@ -3661,7 +3661,14 @@ EOF
         [ -d "/usr/local/cuda/bin" ] && export PATH="$CUDA_HOME/bin:$PATH";
         [ -d "/usr/local/cuda/lib64" ] && export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:$LD_LIBRARY_PATH";
 
-        curl -fsSL https://openclaw.ai/install.sh | bash;
+        # Download to a temp file before executing: running via "curl | bash"
+        # attaches stdin to the pipe, which makes /dev/tty inaccessible inside
+        # the installer and causes "No such device or address" on any read prompt.
+        # Running a file instead lets bash inherit the terminal as stdin.
+        _oc_tmp="$(mktemp /tmp/oc_install_XXXXXX.sh)";
+        curl -fsSL https://openclaw.ai/install.sh -o "$_oc_tmp";
+        bash "$_oc_tmp";
+        rm -f "$_oc_tmp";
 
         # Pre-populate ~/.openclaw/.env with API keys from ~/.env.secrets so
         # that "openclaw onboard" can pick them up non-interactively.
