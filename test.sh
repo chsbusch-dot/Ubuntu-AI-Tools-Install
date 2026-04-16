@@ -34,6 +34,33 @@ AUTO_INSTALL=false
 RUN_COVERAGE=false
 TOTAL_ERRORS=0
 TOTAL_WARNINGS=0
+SCRIPT_START=$(date +%s)
+
+# Print elapsed time since script start
+elapsed() {
+    local secs=$(( $(date +%s) - SCRIPT_START ))
+    printf "%dm%02ds" $(( secs / 60 )) $(( secs % 60 ))
+}
+
+# ── Heartbeat: print a dot every 5 s so the user knows we're alive ───────────
+# Start before a slow blocking operation, stop after.
+_HEARTBEAT_PID=""
+start_heartbeat() {
+    local msg="${1:-  ⏳ working}"
+    printf "%s" "$msg"
+    ( while true; do sleep 5; printf "."; done ) &
+    _HEARTBEAT_PID=$!
+}
+stop_heartbeat() {
+    if [[ -n "$_HEARTBEAT_PID" ]]; then
+        kill "$_HEARTBEAT_PID" 2>/dev/null || true
+        wait "$_HEARTBEAT_PID" 2>/dev/null || true
+        _HEARTBEAT_PID=""
+    fi
+    echo  # newline after the dots
+}
+# Clean up heartbeat if the script exits unexpectedly
+trap 'stop_heartbeat 2>/dev/null; exit' EXIT INT TERM
 
 for arg in "$@"; do
     case "$arg" in
@@ -49,9 +76,19 @@ try_install() {
     [ "$AUTO_INSTALL" != true ] && return 1
     echo "  Installing $pkg..."
     if command -v apt-get &>/dev/null; then
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >/dev/null 2>&1
+        # Check for dpkg lock before attempting install — unattended-upgrades
+        # can hold it for 10-30 min and apt-get will hang silently.
+        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+            echo "  ⚠️  dpkg lock is held (unattended-upgrades running)."
+            echo "     Wait for it to finish, then re-run with --install."
+            echo "     Or: sudo systemctl stop unattended-upgrades"
+            return 1
+        fi
+        start_heartbeat "  ⏳ apt-get install $pkg"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq "$pkg"
+        stop_heartbeat
     elif command -v brew &>/dev/null; then
-        brew install "$pkg" >/dev/null 2>&1
+        brew install "$pkg" 2>/dev/null
     else
         return 1
     fi
@@ -88,11 +125,13 @@ warn() {
     echo -e "  ${YELLOW}⚠️  $1${RESET}"
     TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
 }
-header() { echo -e "\n${BLUE}=== $1 ===${RESET}"; }
+# Header shows section name + wall-clock time so a stall is immediately visible
+header() { echo -e "\n${BLUE}=== $1 === [$(date '+%H:%M:%S') +$(elapsed)]${RESET}"; }
 
 echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${RESET}"
 echo -e "${CYAN}║   ubuntu-prep-setup.sh  —  Test Suite             ║${RESET}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${RESET}"
+echo -e "  Started: $(date '+%Y-%m-%d %H:%M:%S')"
 
 if [ ! -f "$SETUP_SCRIPT" ]; then
     fail "Cannot find ubuntu-prep-setup.sh at $SETUP_SCRIPT"
@@ -546,15 +585,19 @@ $REC_MODEL_VISION"
     OLLAMA_MODELS=$(echo "$OLLAMA_MODELS_RAW" | sort -u | grep -v '^$')
     OLLAMA_COUNT=$(echo "$OLLAMA_MODELS" | wc -l | awk '{print $1}')
     OLLAMA_ERRORS=0
+    echo "  Checking $OLLAMA_COUNT unique models against ollama.com..."
 
+    _oc_n=0
     while IFS= read -r model; do
-        base_model=$(echo "$model" | cut -d':' -f1)
-        status=$(curl -s -o /dev/null -w "%{http_code}" "https://ollama.com/library/$base_model")
+        _oc_n=$(( _oc_n + 1 ))
+        printf "  [%2d/%d] %-45s" "$_oc_n" "$OLLAMA_COUNT" "$model"
+        status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://ollama.com/library/$(echo "$model" | cut -d':' -f1)")
         if [ "$status" -eq 200 ]; then
-            pass "$model"
+            echo -e " ${GREEN}✅${RESET}"
         else
-            fail "$model (HTTP $status)"
-            OLLAMA_ERRORS=$((OLLAMA_ERRORS + 1))
+            echo -e " ${RED}❌ HTTP $status${RESET}"
+            TOTAL_ERRORS=$(( TOTAL_ERRORS + 1 ))
+            OLLAMA_ERRORS=$(( OLLAMA_ERRORS + 1 ))
         fi
     done <<<"$OLLAMA_MODELS"
     echo "  ($OLLAMA_COUNT unique models checked)"
@@ -580,10 +623,14 @@ $REC_MODEL_VISION"
     HF_MODELS=$(echo "$HF_MODELS_RAW" | sort -u | grep -v '^$')
     HF_COUNT=$(echo "$HF_MODELS" | wc -l | awk '{print $1}')
     HF_ERRORS=0
+    echo "  Checking $HF_COUNT unique repos against huggingface.co..."
 
+    _hf_n=0
     while IFS= read -r repo; do
+        _hf_n=$(( _hf_n + 1 ))
+        printf "  [%2d/%d] %-55s" "$_hf_n" "$HF_COUNT" "$repo"
         repo_name="${repo%:*}"
-        curl_args=(-s -w "\n%{http_code}")
+        curl_args=(-s -w "\n%{http_code}" --max-time 20)
         if [ -n "$HF_TOKEN" ]; then
             curl_args+=(-H "Authorization: Bearer $HF_TOKEN")
         fi
@@ -596,16 +643,19 @@ $REC_MODEL_VISION"
         if [ "$status" -eq 200 ]; then
             if echo "$body" | grep -qi '\.gguf"'; then
                 count=$(echo "$body" | grep -io '\.gguf"' | wc -l | awk '{print $1}')
-                pass "$repo ($count GGUF files)"
+                echo -e " ${GREEN}✅ ($count GGUFs)${RESET}"
             else
-                fail "$repo (no .gguf files in repo)"
-                HF_ERRORS=$((HF_ERRORS + 1))
+                echo -e " ${RED}❌ no .gguf files${RESET}"
+                TOTAL_ERRORS=$(( TOTAL_ERRORS + 1 ))
+                HF_ERRORS=$(( HF_ERRORS + 1 ))
             fi
         elif [ "$status" -eq 401 ] || [ "$status" -eq 403 ]; then
-            warn "$repo (gated — needs HF_TOKEN + license)"
+            echo -e " ${YELLOW}⚠️  gated (needs HF_TOKEN)${RESET}"
+            TOTAL_WARNINGS=$(( TOTAL_WARNINGS + 1 ))
         else
-            fail "$repo (HTTP $status)"
-            HF_ERRORS=$((HF_ERRORS + 1))
+            echo -e " ${RED}❌ HTTP $status${RESET}"
+            TOTAL_ERRORS=$(( TOTAL_ERRORS + 1 ))
+            HF_ERRORS=$(( HF_ERRORS + 1 ))
         fi
     done <<<"$HF_MODELS"
     echo "  ($HF_COUNT unique repos checked)"
@@ -613,7 +663,13 @@ $REC_MODEL_VISION"
     header "10. OpenClaw Compatibility Check (network)"
 
     if [ -f "$SCRIPT_DIR/tests/check-openclaw-compat.sh" ]; then
-        if bash "$SCRIPT_DIR/tests/check-openclaw-compat.sh"; then
+        start_heartbeat "  ⏳ querying npm registry"
+        set +e
+        bash "$SCRIPT_DIR/tests/check-openclaw-compat.sh"
+        _oc_exit=$?
+        set -e
+        stop_heartbeat
+        if [ $_oc_exit -eq 0 ]; then
             pass "OpenClaw npm package is compatible"
         else
             fail "OpenClaw compatibility check failed — review output above"
@@ -627,10 +683,10 @@ fi
 echo ""
 echo -e "${CYAN}══════════════════════════════════════════════════${RESET}"
 if [ $TOTAL_ERRORS -eq 0 ] && [ $TOTAL_WARNINGS -eq 0 ]; then
-    echo -e "${GREEN}✅ ALL TESTS PASSED${RESET}"
+    echo -e "${GREEN}✅ ALL TESTS PASSED${RESET}  ($(elapsed))"
 elif [ $TOTAL_ERRORS -eq 0 ]; then
-    echo -e "${YELLOW}⚠️  PASSED with $TOTAL_WARNINGS warning(s)${RESET}"
+    echo -e "${YELLOW}⚠️  PASSED with $TOTAL_WARNINGS warning(s)${RESET}  ($(elapsed))"
 else
-    echo -e "${RED}❌ FAILED — $TOTAL_ERRORS error(s), $TOTAL_WARNINGS warning(s)${RESET}"
+    echo -e "${RED}❌ FAILED — $TOTAL_ERRORS error(s), $TOTAL_WARNINGS warning(s)${RESET}  ($(elapsed))"
 fi
 exit $TOTAL_ERRORS

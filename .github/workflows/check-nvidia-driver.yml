@@ -1,0 +1,109 @@
+name: NVIDIA Driver Version Check
+
+on:
+  schedule:
+    # Run daily at 08:05 UTC (staggered from openclaw check)
+    - cron: '5 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Version hardcoded in ubuntu-prep-setup.sh — update both together
+  PINNED_VERSION: "595.58.03"
+
+jobs:
+  check-nvidia-driver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for newer NVIDIA production Linux driver
+        id: check
+        run: |
+          # Scrape the latest production branch version from nvidia.com/en-us/drivers/unix/
+          # This page has the version in static HTML — no JS required.
+          PAGE=$(curl -sf --max-time 15 "https://www.nvidia.com/en-us/drivers/unix/" || true)
+
+          if [[ -z "$PAGE" ]]; then
+            echo "⚠️  Could not fetch NVIDIA driver page — skipping check."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Extract the production branch version for Linux x86_64
+          # The page lists it as plain text adjacent to "Production Branch Version"
+          LATEST=$(echo "$PAGE" \
+            | grep -oP '(?<=Production Branch Version</td>).*?(\d+\.\d+[\d.]*)' \
+            | grep -oP '\d+\.\d+[\d.]*' \
+            | head -1 || true)
+
+          if [[ -z "$LATEST" ]]; then
+            echo "⚠️  Could not parse version from page — page structure may have changed."
+            echo "parse_failed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Pinned version : $PINNED_VERSION"
+          echo "Latest version : $LATEST"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+          if [[ "$LATEST" != "$PINNED_VERSION" ]]; then
+            echo "outdated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "outdated=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Pinned version matches latest production release."
+          fi
+
+      - name: Create issue if driver is outdated
+        if: steps.check.outputs.outdated == 'true' || steps.check.outputs.parse_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LATEST: ${{ steps.check.outputs.latest }}
+          PARSE_FAILED: ${{ steps.check.outputs.parse_failed }}
+        run: |
+          # Deduplicate — skip if an open nvidia-driver issue already exists
+          OPEN=$(gh issue list --repo "$GH_REPO" \
+                   --label nvidia-driver --state open --json number --jq 'length')
+          if [ "${OPEN:-0}" -gt 0 ]; then
+            echo "Open issue already exists — skipping creation."
+            exit 0
+          fi
+
+          if [[ "$PARSE_FAILED" == "true" ]]; then
+            TITLE="⚠️ NVIDIA driver page structure changed — version check failed"
+            BODY="The daily NVIDIA driver version check could not parse the version from [nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/).
+
+The page structure may have changed. Update the grep pattern in \`.github/workflows/check-nvidia-driver.yml\`.
+
+**Action needed:** Check the page manually and update \`PINNED_VERSION\` in the workflow and \`_drv_url\` in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`.
+
+[Workflow run](${RUN_URL})"
+          else
+            TITLE="⚠️ NVIDIA driver update available: ${LATEST} (pinned: ${PINNED_VERSION})"
+            BODY="A newer NVIDIA production Linux driver is available.
+
+| | Version |
+|---|---|
+| **Pinned in script** | \`${PINNED_VERSION}\` |
+| **Latest on nvidia.com** | \`${LATEST}\` |
+
+**Action needed:**
+1. Get the full download URL from [nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/)
+2. Verify the new version works (check release notes for regressions on passthrough/vGPU)
+3. Update \`PINNED_VERSION\` in \`.github/workflows/check-nvidia-driver.yml\`
+4. Update the fallback URL in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`
+
+[Workflow run](${RUN_URL})"
+          fi
+
+          gh issue create \
+            --repo "$GH_REPO" \
+            --title "$TITLE" \
+            --label "nvidia-driver" \
+            --body "$BODY"

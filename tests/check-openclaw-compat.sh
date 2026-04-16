@@ -9,8 +9,12 @@
 # What it tests:
 #   1. openclaw@latest exists on the npm registry
 #   2. The package.json "bin" field maps "openclaw" to a known entry point
-#   3. openclaw's install.sh is still fetchable (we skip it, but good to know)
-#   4. The install.sh still uses npm as its install method (not a custom binary)
+#   3. openclaw@beta exists (our primary install tag)
+#   4. openclaw.ai/install.sh is reachable and still references 'onboard'
+#
+# NOT checked (intentionally):
+#   - Whether install.sh uses npm (we bypass their installer; irrelevant)
+#   - openclaw@next (that tag has never existed; removed to avoid noise)
 #
 # Usage:
 #   ./tests/check-openclaw-compat.sh           # run all checks
@@ -39,7 +43,7 @@ warn()  { $QUIET || echo -e "\e[1;33m  ⚠️\e[0m  $*"; }
 
 info "Checking npm registry for openclaw@latest..."
 
-NPM_META=$(curl -sf "https://registry.npmjs.org/openclaw/latest" 2>/dev/null) || true
+NPM_META=$(curl -sf --max-time 15 "https://registry.npmjs.org/openclaw/latest" 2>/dev/null) || true
 
 if [[ -z "$NPM_META" ]]; then
     fail "openclaw@latest not found on npm registry"
@@ -70,7 +74,7 @@ else:
         BIN_TARGET=$(echo "$BIN_FIELD" | grep "^openclaw=" | cut -d= -f2)
         pass "bin.openclaw -> $BIN_TARGET"
     elif [[ "$BIN_FIELD" == "NONE" || "$BIN_FIELD" == "PARSE_ERROR" ]]; then
-        fail "No 'bin' field in package.json — npm install -g won't create a binary"
+        fail "No 'openclaw' bin entry in package.json — npm install -g won't create the binary"
     else
         warn "bin field changed (no 'openclaw' key): $BIN_FIELD"
         warn "Our script calls 'openclaw onboard' — this may need updating"
@@ -80,11 +84,11 @@ else
     fail "Skipped (npm metadata unavailable)"
 fi
 
-# ── 3. Check openclaw@beta (current primary) and @next as fallbacks ───
+# ── 3. Check openclaw@beta exists (our primary install tag) ───────────
 
 info "Checking npm registry for openclaw@beta (primary install tag)..."
 
-BETA_META=$(curl -sf "https://registry.npmjs.org/openclaw/beta" 2>/dev/null) || true
+BETA_META=$(curl -sf --max-time 15 "https://registry.npmjs.org/openclaw/beta" 2>/dev/null) || true
 
 if [[ -z "$BETA_META" ]]; then
     fail "openclaw@beta not found — our primary install tag is missing"
@@ -93,70 +97,36 @@ else
     pass "openclaw@beta exists (version: $BETA_VERSION)"
 fi
 
-info "Checking npm registry for openclaw@next (fallback tag)..."
+# ── 4. Check install.sh reachability and 'onboard' subcommand ────────
+#
+# We fetch install.sh ONCE into a temp file to avoid double-request flakiness.
+# We don't check whether it uses npm (their installer changed from npm to pnpm
+# internally, but we bypass their installer and call npm directly, so it doesn't
+# matter). We only care that:
+#   a) the site is up
+#   b) the 'onboard' subcommand hasn't been renamed
 
-NEXT_META=$(curl -sf "https://registry.npmjs.org/openclaw/next" 2>/dev/null) || true
+info "Fetching https://openclaw.ai/install.sh..."
 
-if [[ -z "$NEXT_META" ]]; then
-    warn "openclaw@next not found — fallback tag doesn't exist (non-fatal)"
-else
-    NEXT_VERSION=$(echo "$NEXT_META" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-    pass "openclaw@next exists (version: $NEXT_VERSION)"
-fi
+_INSTALL_TMP=$(mktemp)
+trap 'rm -f "$_INSTALL_TMP"' EXIT
 
-# ── 4. Check install.sh is still fetchable ────────────────────────────
+_INSTALL_HTTP=$(curl -sf --max-time 20 -o "$_INSTALL_TMP" -w "%{http_code}" \
+    "https://openclaw.ai/install.sh" 2>/dev/null) || _INSTALL_HTTP="000"
 
-info "Checking https://openclaw.ai/install.sh..."
+if [[ "$_INSTALL_HTTP" == "200" ]]; then
+    pass "install.sh is reachable (HTTP 200)"
 
-INSTALL_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" "https://openclaw.ai/install.sh" 2>/dev/null) || INSTALL_HTTP="000"
-
-if [[ "$INSTALL_HTTP" == "200" ]]; then
-    pass "install.sh is reachable (HTTP $INSTALL_HTTP)"
-else
-    warn "install.sh returned HTTP $INSTALL_HTTP (we don't use it, but notable)"
-fi
-
-# ── 5. Check install.sh still uses npm ────────────────────────────────
-
-info "Checking install.sh still uses npm as install method..."
-
-INSTALL_SCRIPT=$(curl -sf "https://openclaw.ai/install.sh" 2>/dev/null) || true
-
-if [[ -n "$INSTALL_SCRIPT" ]]; then
-    if echo "$INSTALL_SCRIPT" | grep -q "npm.*install.*-g"; then
-        pass "install.sh still uses 'npm install -g' (our approach is compatible)"
+    ONBOARD_COUNT=$(grep -c "onboard" "$_INSTALL_TMP" 2>/dev/null || echo "0")
+    if [[ "$ONBOARD_COUNT" -gt 0 ]]; then
+        pass "'onboard' subcommand still referenced in install.sh ($ONBOARD_COUNT occurrences)"
     else
-        warn "install.sh may have changed install method — 'npm install -g' not found"
+        warn "'onboard' not found in install.sh — subcommand may have been renamed"
         warn "Review: https://openclaw.ai/install.sh"
-    fi
-
-    # Check if they added a different binary name
-    if echo "$INSTALL_SCRIPT" | grep -q "openclaw onboard\|openclaw doctor\|openclaw "; then
-        pass "install.sh still references 'openclaw' command (binary name unchanged)"
-    else
-        warn "install.sh no longer references 'openclaw' command — binary may be renamed"
         ERRORS=$((ERRORS + 1))
     fi
 else
-    warn "Could not fetch install.sh for analysis"
-fi
-
-# ── 6. Check that onboard subcommand exists ───────────────────────────
-
-info "Checking 'onboard' subcommand in package..."
-
-if [[ -n "$NPM_META" ]]; then
-    # Check if the readme or description mentions onboard
-    PKG_DESC=$(echo "$NPM_META" | python3 -c "import sys,json; print(json.load(sys.stdin).get('description',''))" 2>/dev/null || echo "")
-
-    # Check scripts field for onboard references
-    HAS_ONBOARD=$(echo "$INSTALL_SCRIPT" | grep -c "onboard" 2>/dev/null || echo "0")
-
-    if [[ "$HAS_ONBOARD" -gt 0 ]]; then
-        pass "'onboard' subcommand still referenced in install.sh ($HAS_ONBOARD occurrences)"
-    else
-        warn "'onboard' not found in install.sh — subcommand may have been renamed"
-    fi
+    warn "install.sh returned HTTP $_INSTALL_HTTP (non-fatal — we don't use their installer)"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────

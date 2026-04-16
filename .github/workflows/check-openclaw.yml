@@ -6,6 +6,13 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  issues: write   # needed to create/list issues
+  contents: read  # needed for actions/checkout
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   check-openclaw:
     runs-on: ubuntu-latest
@@ -17,41 +24,34 @@ jobs:
 
       - name: Create issue on failure
         if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const title = '⚠️ OpenClaw compatibility check failed';
-            // Don't create duplicate issues
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'openclaw-compat',
-            });
-            if (issues.length > 0) {
-              console.log('Open issue already exists, skipping creation');
-              return;
-            }
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body: [
-                'The daily OpenClaw compatibility check failed.',
-                '',
-                'This means the `openclaw` npm package or installer may have changed',
-                'in a way that breaks our direct `npm install -g openclaw` approach',
-                'in `ubuntu-prep-setup.sh`.',
-                '',
-                '**Action needed:** Review the [workflow run](' +
-                  `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` +
-                  ') and update `install_openclaw()` if necessary.',
-                '',
-                'Common changes to watch for:',
-                '- `bin` field in package.json renamed (binary no longer called `openclaw`)',
-                '- `onboard` subcommand renamed or removed',
-                '- Install method changed from npm to something else',
-                '- Package moved to a different npm scope (e.g. `@openclaw/cli`)',
-              ].join('\n'),
-              labels: ['openclaw-compat'],
-            });
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Skip if an open openclaw-compat issue already exists
+          OPEN=$(gh issue list --repo "$GH_REPO" \
+                   --label openclaw-compat --state open --json number --jq 'length')
+          if [ "${OPEN:-0}" -gt 0 ]; then
+            echo "Open issue already exists — skipping creation."
+            exit 0
+          fi
+
+          gh issue create \
+            --repo "$GH_REPO" \
+            --title "⚠️ OpenClaw compatibility check failed" \
+            --label "openclaw-compat" \
+            --body "The daily OpenClaw compatibility check failed.
+
+This means the \`openclaw\` npm package or installer may have changed
+in a way that breaks our direct \`npm install -g openclaw\` approach
+in \`ubuntu-prep-setup.sh\`.
+
+**Action needed:** Review the [workflow run](${RUN_URL}) and update \`install_openclaw()\` if necessary.
+
+Common changes to watch for:
+- \`bin\` field in package.json renamed (binary no longer called \`openclaw\`)
+- \`onboard\` subcommand renamed or removed
+- Install method changed from npm to something else
+- Package moved to a different npm scope (e.g. \`@openclaw/cli\`)
+- \`@beta\` tag removed or renamed"

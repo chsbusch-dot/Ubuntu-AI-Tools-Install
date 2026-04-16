@@ -55,6 +55,14 @@ start_sudo_keepalive() {
 # Global array to track post-installation actions
 POST_INSTALL_ACTIONS=()
 
+# ── Resume-after-reboot state ─────────────────────────────────────────────────
+RESUME_MODE=false
+RESUME_STATE_FILE="/var/lib/ubuntu-prep/resume.env"
+# These three are global so save_resume_state() can access them from main()
+MASTER_SELECTIONS=()
+MASTER_INSTALLED_STATE=()
+ACTIVE_INDICES=(0)
+
 # Global vars for target user
 TARGET_USER=""
 TARGET_USER_HOME=""
@@ -116,6 +124,7 @@ HEADLESS_MODE=false
 for arg in "$@"; do
     case "$arg" in
         --headless) HEADLESS_MODE=true ;;
+        --resume) RESUME_MODE=true ;;
     esac
 done
 
@@ -1123,10 +1132,91 @@ install_nvidia_driver() {
     read -rp "Your choice [1/2]: " _gpu_drv_type
 
     if [[ "$_gpu_drv_type" == "1" ]]; then
-        print_info "Installing NVIDIA consumer driver via ubuntu-drivers..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common
-        sudo ubuntu-drivers install --gpgpu
-        print_success "NVIDIA driver installed successfully."
+        # ── Consumer GPU: .run installer (works for native and PCIe passthrough) ──
+        #
+        # Why not ubuntu-drivers?  ubuntu-drivers works fine for bare-metal but
+        # produces "udevadm hwdb is deprecated" spam and can fail on ESXi
+        # passthrough VMs where the hypervisor CPUID is visible.  The .run
+        # installer is more reliable across both cases.
+
+        # Detect if running inside a hypervisor (ESXi passthrough likely)
+        local _is_vm=false
+        if systemd-detect-virt --quiet 2>/dev/null; then
+            _is_vm=true
+        fi
+
+        # Driver URL — use NVIDIA_RTX_DRIVER_URL from .env.secrets if set,
+        # otherwise fall back to the hardcoded production version.
+        # To update: get the full .run URL from https://www.nvidia.com/en-us/drivers/unix/
+        # and set it in .env.secrets:
+        #   export NVIDIA_RTX_DRIVER_URL="https://us.download.nvidia.com/XFree86/Linux-x86_64/595.58.03/NVIDIA-Linux-x86_64-595.58.03.run"
+        local _drv_url="${NVIDIA_RTX_DRIVER_URL:-https://us.download.nvidia.com/XFree86/Linux-x86_64/595.58.03/NVIDIA-Linux-x86_64-595.58.03.run}"
+        local _drv_ver
+        _drv_ver=$(basename "$_drv_url" .run | grep -oP '[\d.]+$')
+        local _drv_file
+        _drv_file="/tmp/$(basename "$_drv_url")"
+
+        if [[ -n "${NVIDIA_RTX_DRIVER_URL:-}" ]]; then
+            print_info "Using driver URL from .env.secrets: $_drv_url"
+        else
+            print_info "Using hardcoded driver version $_drv_ver (set NVIDIA_RTX_DRIVER_URL in .env.secrets to override)"
+        fi
+
+        print_info "Installing prerequisites..."
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential "linux-headers-$(uname -r)" \
+            pkg-config libvulkan1 dkms wget
+
+        # Blacklist Nouveau — required for passthrough VMs, harmless on bare-metal
+        if lsmod | grep -q "nouveau" 2>/dev/null; then
+            print_info "Blacklisting Nouveau driver..."
+            sudo tee /etc/modprobe.d/blacklist-nouveau.conf >/dev/null <<'NOUVEOF'
+blacklist nouveau
+options nouveau modeset=0
+NOUVEOF
+            sudo update-initramfs -u
+            print_info "Nouveau blacklisted — a reboot will be required before the driver binds."
+        else
+            print_info "Nouveau is not loaded — skipping blacklist step."
+        fi
+
+        # Download the .run installer
+        if [[ ! -f "$_drv_file" ]]; then
+            print_info "Downloading NVIDIA driver ${_drv_ver}..."
+            wget -q --show-progress -O "$_drv_file" "$_drv_url"
+            chmod +x "$_drv_file"
+        else
+            print_info "Installer already present: $_drv_file"
+        fi
+
+        # Run unattended install
+        print_info "Running NVIDIA installer (silent)..."
+        sudo "$_drv_file" \
+            --silent \
+            --accept-license \
+            --no-questions \
+            --no-x-check \
+            --no-wine-files \
+            --dkms
+
+        print_success "NVIDIA driver ${_drv_ver} installed."
+
+        # ── ESXi PCIe passthrough reminder ───────────────────────────────────
+        if [[ "$_is_vm" == true ]]; then
+            echo ""
+            echo -e "\e[1;43m\e[30m ⚠️  ESXi / Hypervisor detected — PCIe passthrough VM settings required \e[0m"
+            echo -e "\e[1;33m"
+            echo "  Add these to your VM's Advanced Parameters in vSphere before rebooting:"
+            echo ""
+            echo "    pciPassthru.use64bitMMIO    = \"TRUE\""
+            echo "    pciPassthru.64bitMMIOSizeGB = \"64\"   (must exceed total VRAM — e.g. 64 for a 24 GB A5000)"
+            echo "    hypervisor.cpuid.v0         = \"FALSE\""
+            echo ""
+            echo "  Without these settings nvidia-smi will fail with 'No devices found'."
+            echo -e "\e[0m"
+        fi
+
         POST_INSTALL_ACTIONS+=("reboot")
         return 0
     fi
@@ -1457,6 +1547,14 @@ install_gcc() {
 
 # 12. Install NVIDIA Container Toolkit
 install_container_toolkit() {
+    # The CDI refresh service (nvidia-cdi-refresh) runs immediately after install
+    # and talks to the GPU. If the kernel module isn't loaded it will fail.
+    if ! require_nvidia_module_loaded "NVIDIA Container Toolkit"; then
+        echo "⚠️  Skipping Container Toolkit install — reboot first, then re-run."
+        record_component_outcome "NVIDIA Container Toolkit" "$CONTAINER_TOOLKIT_COMPONENT_ACTION" "failed"
+        return 1
+    fi
+
     print_info "Installing NVIDIA Container Toolkit..."
     curl_with_retry -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
     curl_with_retry -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
@@ -1630,6 +1728,30 @@ get_cuda_nvcc_path() {
         return 0
     fi
 
+    return 1
+}
+
+# Returns 0 if the NVIDIA kernel module is loaded (driver active after reboot).
+# Returns 1 and prints a clear reboot warning if it is not.
+# Call this at the start of any step that requires a live GPU.
+require_nvidia_module_loaded() {
+    local caller="${1:-this step}"
+    if lsmod | grep -q "^nvidia "; then
+        return 0
+    fi
+    # Module not loaded — check if driver is at least installed
+    if command -v nvidia-smi &>/dev/null ||
+        dpkg -l 'nvidia-*' 2>/dev/null | grep -q '^ii'; then
+        echo ""
+        echo -e "\e[1;41m\e[97m ⚠️  NVIDIA driver installed but kernel module not loaded \e[0m"
+        echo -e "\e[1;33m"
+        echo "  The NVIDIA driver was installed but the system has not been rebooted yet."
+        echo "  $caller requires the GPU to be active — it will fail without a reboot."
+        echo ""
+        echo "  Please reboot now and re-run the script to continue:"
+        echo "    sudo reboot"
+        echo -e "\e[0m"
+    fi
     return 1
 }
 
@@ -3117,15 +3239,18 @@ install_local_llm() {
             fi
 
             print_info "Auto-detecting GPU Compute Capability..."
-            local compute_cap="86" # Default fallback
-            if command -v nvidia-smi &>/dev/null; then
+            local compute_cap="86" # Default fallback (Ampere — covers RTX 3xxx/A-series)
+            if ! require_nvidia_module_loaded "CUDA llama.cpp build"; then
+                echo "⚠️  GPU not active — using default compute capability $compute_cap."
+                echo "    After reboot, re-run to build with the correct architecture."
+            elif command -v nvidia-smi &>/dev/null; then
                 local detected_cap
                 detected_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '.')
                 if [[ -n "$detected_cap" ]]; then
                     compute_cap="$detected_cap"
                     print_success "Auto-detected Compute Capability: $compute_cap"
                 else
-                    print_info "Detection failed. Defaulting to 86."
+                    print_info "nvidia-smi returned no compute cap — defaulting to $compute_cap."
                 fi
             fi
             cmake_flags="-DGGML_CUDA=ON -DGGML_NATIVE=OFF $nccl_flag -DCMAKE_CUDA_ARCHITECTURES=\"$compute_cap\""
@@ -3918,7 +4043,10 @@ EOF
                 _host="${_host// /}"
                 [[ -z "$_host" ]] && continue
                 # Strip protocol/port if user pasted a full URL
-                _host="${_host#http://}"; _host="${_host#https://}"; _host="${_host%%/*}"; _host="${_host%%:*}"
+                _host="${_host#http://}"
+                _host="${_host#https://}"
+                _host="${_host%%/*}"
+                _host="${_host%%:*}"
                 origins_list+=", \"http://${_host}:${OPENCLAW_PORT}\""
                 [[ "${OPENCLAW_PORT}" != "18789" ]] && origins_list+=", \"http://${_host}:18789\""
             done
@@ -5044,12 +5172,58 @@ main() {
     check_sudo_privileges
     start_sudo_keepalive
     check_os
-    determine_target_user
-    detect_gpu
 
-    clear
-    print_status_header
-    configure_timezone
+    # ── Resume mode: restore state from before the reboot ────────────────────
+    if [[ "$RESUME_MODE" == true ]]; then
+        if [[ ! -f "$RESUME_STATE_FILE" ]]; then
+            echo "❌ --resume specified but no state file found at $RESUME_STATE_FILE"
+            exit 1
+        fi
+        echo ""
+        echo -e "\e[1;36m🔄 Resuming ubuntu-prep-setup.sh after reboot...\e[0m"
+        # shellcheck source=/dev/null
+        source "$RESUME_STATE_FILE"
+
+        # Restore global arrays from space-separated strings
+        read -ra MASTER_SELECTIONS <<<"$RESUME_SELECTIONS"
+        read -ra MASTER_INSTALLED_STATE <<<"$RESUME_COMPLETED"
+        read -ra ACTIVE_INDICES <<<"$RESUME_ACTIVE"
+
+        # Restore config variables
+        TARGET_USER="$RESUME_TARGET_USER"
+        TARGET_USER_HOME="$RESUME_TARGET_USER_HOME"
+        IS_DIFFERENT_USER="$RESUME_IS_DIFFERENT_USER"
+        HAS_NVIDIA_GPU="$RESUME_HAS_NVIDIA_GPU"
+        LLM_BACKEND_CHOICE="${RESUME_LLM_BACKEND_CHOICE:-}"
+        FRONTEND_BACKEND_TARGET="${RESUME_FRONTEND_BACKEND_TARGET:-}"
+        LLAMA_CTX_SIZE="${RESUME_LLAMA_CTX_SIZE:-65536}"
+        LOAD_DEFAULT_MODEL="${RESUME_LOAD_DEFAULT_MODEL:-n}"
+        RUN_LLAMA_BENCH="${RESUME_RUN_LLAMA_BENCH:-n}"
+        INSTALL_LLAMA_SERVICE="${RESUME_INSTALL_LLAMA_SERVICE:-n}"
+        EXPOSE_LLM_ENGINE="${RESUME_EXPOSE_LLM_ENGINE:-n}"
+        INSTALL_OPENWEBUI="${RESUME_INSTALL_OPENWEBUI:-n}"
+        INSTALL_LIBRECHAT="${RESUME_INSTALL_LIBRECHAT:-n}"
+        LLAMACPP_MODEL_REPO="${RESUME_LLAMACPP_MODEL_REPO:-}"
+        OLLAMA_PULL_MODEL="${RESUME_OLLAMA_PULL_MODEL:-}"
+        OPENCLAW_RELEASE_CHANNEL="${RESUME_OPENCLAW_RELEASE_CHANNEL:-latest}"
+        EXPOSE_OPENCLAW="${RESUME_EXPOSE_OPENCLAW:-n}"
+        OPENCLAW_PORT="${RESUME_OPENCLAW_PORT:-18789}"
+
+        echo -e "  Restored selections: [${MASTER_SELECTIONS[*]}]"
+        echo -e "  Already completed:   [${MASTER_INSTALLED_STATE[*]}]"
+        echo -e "  Target user:         $TARGET_USER"
+        echo ""
+        detect_gpu # re-detect GPU (now loaded after reboot)
+        setup_env_secrets
+        # Jump straight to installation — skip all menus
+    else
+        determine_target_user
+        detect_gpu
+
+        clear
+        print_status_header
+        configure_timezone
+    fi
 
     local MASTER_OPTIONS=(
         "Update System Packages (apt update && upgrade)"
@@ -5090,14 +5264,19 @@ main() {
     )
 
     local MENU_ITEM_COUNT=16
-    local -a MASTER_SELECTIONS=()
-    local -a MASTER_INSTALLED_STATE=()
-    for ((i = 0; i < MENU_ITEM_COUNT; i++)); do
-        MASTER_SELECTIONS+=(0)
-        MASTER_INSTALLED_STATE+=(0)
-    done
-    MASTER_SELECTIONS[0]=1
-    local ACTIVE_INDICES=(0)
+    # NB: MASTER_SELECTIONS, MASTER_INSTALLED_STATE, ACTIVE_INDICES are global
+    # (declared at top of script) so save_resume_state() can access them.
+    # In resume mode they were already populated from the state file above.
+    if [[ "$RESUME_MODE" == false ]]; then
+        MASTER_SELECTIONS=()
+        MASTER_INSTALLED_STATE=()
+        for ((i = 0; i < MENU_ITEM_COUNT; i++)); do
+            MASTER_SELECTIONS+=(0)
+            MASTER_INSTALLED_STATE+=(0)
+        done
+        MASTER_SELECTIONS[0]=1
+        ACTIVE_INDICES=(0)
+    fi
     local UI_TO_MASTER=()
 
     ensure_active_index() {
@@ -5218,270 +5397,272 @@ main() {
         return $changed
     }
 
-    local GOAL_SELECTIONS=(0 0 0)
-    local GOAL_OPTIONS=(
-        "OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
-        "NVIDIA GPU Setup (Driver, CUDA, Container Toolkit, cuDNN)"
-        "Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
-    )
+    if [[ "$RESUME_MODE" == false ]]; then
+        local GOAL_SELECTIONS=(0 0 0)
+        local GOAL_OPTIONS=(
+            "OpenClaw Server Setup (Core tools, Docker, Node.js, OpenClaw)"
+            "NVIDIA GPU Setup (Driver, CUDA, Container Toolkit, cuDNN)"
+            "Local LLM Setup (Ollama, llama.cpp, Open-WebUI)"
+        )
 
-    while true; do
-        clear
-        print_status_header
-        echo -e "\n\e[1;36mSelect Installation Goals:\e[0m"
-        for i in "${!GOAL_OPTIONS[@]}"; do
-            if [[ ${GOAL_SELECTIONS[$i]} -eq 1 ]]; then
-                echo -e " \e[1;32m[x]\e[0m $((i + 1)). ${GOAL_OPTIONS[$i]}"
-            else
-                echo -e " [ ] $((i + 1)). ${GOAL_OPTIONS[$i]}"
-            fi
-        done
-        echo "---------------------------------"
-        echo "Use numbers [1-3] to toggle a goal. Press 'a' to select all."
-        echo "Press 'c' to continue to the detailed menu, or 'q' to quit."
-        if systemctl list-unit-files 2>/dev/null | grep -q '^llama-server.service'; then
-            echo "Press 'e' to edit llama.cpp server parameters."
-        fi
-        echo "Press 's' to save current settings to ~/AI-settings.txt."
-        read -p "Your choice: " goal_choice
-
-        if [[ "$goal_choice" =~ ^[1-3]$ ]]; then
-            local index=$((goal_choice - 1))
-            GOAL_SELECTIONS[$index]=$((1 - GOAL_SELECTIONS[$index]))
-        elif [[ "$goal_choice" == "a" || "$goal_choice" == "A" ]]; then
-            GOAL_SELECTIONS=(1 1 1)
-        elif [[ "$goal_choice" == "s" || "$goal_choice" == "S" ]]; then
-            save_ai_settings_file
-            echo ""
-            read -p "Press Enter to return to the menu…" _
-        elif [[ "$goal_choice" == "e" || "$goal_choice" == "E" ]]; then
+        while true; do
+            clear
+            print_status_header
+            echo -e "\n\e[1;36mSelect Installation Goals:\e[0m"
+            for i in "${!GOAL_OPTIONS[@]}"; do
+                if [[ ${GOAL_SELECTIONS[$i]} -eq 1 ]]; then
+                    echo -e " \e[1;32m[x]\e[0m $((i + 1)). ${GOAL_OPTIONS[$i]}"
+                else
+                    echo -e " [ ] $((i + 1)). ${GOAL_OPTIONS[$i]}"
+                fi
+            done
+            echo "---------------------------------"
+            echo "Use numbers [1-3] to toggle a goal. Press 'a' to select all."
+            echo "Press 'c' to continue to the detailed menu, or 'q' to quit."
             if systemctl list-unit-files 2>/dev/null | grep -q '^llama-server.service'; then
-                edit_llama_server_parameters
+                echo "Press 'e' to edit llama.cpp server parameters."
+            fi
+            echo "Press 's' to save current settings to ~/AI-settings.txt."
+            read -p "Your choice: " goal_choice
+
+            if [[ "$goal_choice" =~ ^[1-3]$ ]]; then
+                local index=$((goal_choice - 1))
+                GOAL_SELECTIONS[$index]=$((1 - GOAL_SELECTIONS[$index]))
+            elif [[ "$goal_choice" == "a" || "$goal_choice" == "A" ]]; then
+                GOAL_SELECTIONS=(1 1 1)
+            elif [[ "$goal_choice" == "s" || "$goal_choice" == "S" ]]; then
+                save_ai_settings_file
                 echo ""
                 read -p "Press Enter to return to the menu…" _
+            elif [[ "$goal_choice" == "e" || "$goal_choice" == "E" ]]; then
+                if systemctl list-unit-files 2>/dev/null | grep -q '^llama-server.service'; then
+                    edit_llama_server_parameters
+                    echo ""
+                    read -p "Press Enter to return to the menu…" _
+                else
+                    echo -e "\nllama-server.service is not installed." && sleep 1
+                fi
+            elif [[ "$goal_choice" == "c" || "$goal_choice" == "C" ]]; then
+                if [[ ${GOAL_SELECTIONS[0]} -eq 0 && ${GOAL_SELECTIONS[1]} -eq 0 && ${GOAL_SELECTIONS[2]} -eq 0 ]]; then
+                    echo -e "\nPlease select at least one goal before continuing." && sleep 1
+                else
+                    break
+                fi
+            elif [[ "$goal_choice" == "q" || "$goal_choice" == "Q" ]]; then
+                echo -e "\nExiting."
+                exit 0
             else
-                echo -e "\nllama-server.service is not installed." && sleep 1
+                echo -e "\nInvalid option." && sleep 1
             fi
-        elif [[ "$goal_choice" == "c" || "$goal_choice" == "C" ]]; then
-            if [[ ${GOAL_SELECTIONS[0]} -eq 0 && ${GOAL_SELECTIONS[1]} -eq 0 && ${GOAL_SELECTIONS[2]} -eq 0 ]]; then
-                echo -e "\nPlease select at least one goal before continuing." && sleep 1
-            else
-                break
-            fi
-        elif [[ "$goal_choice" == "q" || "$goal_choice" == "Q" ]]; then
-            echo -e "\nExiting."
-            exit 0
-        else
-            echo -e "\nInvalid option." && sleep 1
-        fi
-    done
+        done
 
-    if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(2 3 4 5 6 15); fi
-    if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10 11 12 13); fi
-    if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(14); fi
+        if [[ ${GOAL_SELECTIONS[0]} -eq 1 ]]; then ACTIVE_INDICES+=(2 3 4 5 6 15); fi
+        if [[ ${GOAL_SELECTIONS[1]} -eq 1 ]]; then ACTIVE_INDICES+=(7 8 9 10 11 12 13); fi
+        if [[ ${GOAL_SELECTIONS[2]} -eq 1 ]]; then ACTIVE_INDICES+=(14); fi
 
-    mapfile -t ACTIVE_INDICES < <(printf '%s\n' "${ACTIVE_INDICES[@]}" | sort -n)
+        mapfile -t ACTIVE_INDICES < <(printf '%s\n' "${ACTIVE_INDICES[@]}" | sort -n)
 
-    check_installations
+        check_installations
 
-    while true; do
-        show_menu
-        read -p "Your choice: " choice
+        while true; do
+            show_menu
+            read -p "Your choice: " choice
 
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#UI_TO_MASTER[@]} ]; then
-            local master_index=${UI_TO_MASTER[$choice]}
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#UI_TO_MASTER[@]} ]; then
+                local master_index=${UI_TO_MASTER[$choice]}
 
-            if [[ $master_index -eq 0 ]]; then
-                echo -e "\nSystem Update is required and cannot be deselected." && sleep 1.5
-                continue
-            fi
+                if [[ $master_index -eq 0 ]]; then
+                    echo -e "\nSystem Update is required and cannot be deselected." && sleep 1.5
+                    continue
+                fi
 
-            if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 && $master_index -ne 14 && $master_index -ne 15 ]]; then
-                echo -e "\nOption $((choice)) is already installed." && sleep 1
-                continue
-            fi
+                if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 1 && $master_index -ne 14 && $master_index -ne 15 ]]; then
+                    echo -e "\nOption $((choice)) is already installed." && sleep 1
+                    continue
+                fi
 
-            if [[ $master_index -eq 14 ]]; then
-                if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
-                    MASTER_SELECTIONS[14]=0
-                    reset_local_ai_component_state
-                    detect_local_ai_components
-                    if [[ "$LLAMA_COMPONENT_STATUS" != "missing" || "$OLLAMA_COMPONENT_STATUS" != "missing" || "$OPENWEBUI_COMPONENT_STATUS" != "missing" || "$LIBRECHAT_COMPONENT_STATUS" != "missing" ]]; then
-                        MASTER_INSTALLED_STATE[14]=1
-                    else
+                if [[ $master_index -eq 14 ]]; then
+                    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
+                        MASTER_SELECTIONS[14]=0
+                        reset_local_ai_component_state
+                        detect_local_ai_components
+                        if [[ "$LLAMA_COMPONENT_STATUS" != "missing" || "$OLLAMA_COMPONENT_STATUS" != "missing" || "$OPENWEBUI_COMPONENT_STATUS" != "missing" || "$LIBRECHAT_COMPONENT_STATUS" != "missing" ]]; then
+                            MASTER_INSTALLED_STATE[14]=1
+                        else
+                            MASTER_INSTALLED_STATE[14]=0
+                        fi
+                        continue
+                    fi
+
+                    if configure_local_llm_components; then
+                        MASTER_SELECTIONS[14]=1
                         MASTER_INSTALLED_STATE[14]=0
-                    fi
-                    continue
-                fi
-
-                if configure_local_llm_components; then
-                    MASTER_SELECTIONS[14]=1
-                    MASTER_INSTALLED_STATE[14]=0
-                else
-                    reset_local_ai_component_state
-                    MASTER_SELECTIONS[14]=0
-                    continue
-                fi
-            elif [[ $master_index -eq 15 ]]; then
-                if [[ ${MASTER_SELECTIONS[15]} -eq 1 ]]; then
-                    MASTER_SELECTIONS[15]=0
-                    OPENCLAW_COMPONENT_ACTION="skip"
-                    EXPOSE_OPENCLAW="n"
-                    OPENCLAW_PORT="18789"
-                    detect_local_ai_components
-                    if [[ "$OPENCLAW_COMPONENT_STATUS" != "missing" ]]; then
-                        MASTER_INSTALLED_STATE[15]=1
                     else
+                        reset_local_ai_component_state
+                        MASTER_SELECTIONS[14]=0
+                        continue
+                    fi
+                elif [[ $master_index -eq 15 ]]; then
+                    if [[ ${MASTER_SELECTIONS[15]} -eq 1 ]]; then
+                        MASTER_SELECTIONS[15]=0
+                        OPENCLAW_COMPONENT_ACTION="skip"
+                        EXPOSE_OPENCLAW="n"
+                        OPENCLAW_PORT="18789"
+                        detect_local_ai_components
+                        if [[ "$OPENCLAW_COMPONENT_STATUS" != "missing" ]]; then
+                            MASTER_INSTALLED_STATE[15]=1
+                        else
+                            MASTER_INSTALLED_STATE[15]=0
+                        fi
+                        continue
+                    fi
+
+                    if configure_openclaw_selection; then
+                        MASTER_SELECTIONS[15]=1
                         MASTER_INSTALLED_STATE[15]=0
+                    else
+                        MASTER_SELECTIONS[15]=0
+                        OPENCLAW_COMPONENT_ACTION="skip"
+                        EXPOSE_OPENCLAW="n"
+                        OPENCLAW_PORT="18789"
+                        continue
                     fi
-                    continue
-                fi
-
-                if configure_openclaw_selection; then
-                    MASTER_SELECTIONS[15]=1
-                    MASTER_INSTALLED_STATE[15]=0
                 else
-                    MASTER_SELECTIONS[15]=0
-                    OPENCLAW_COMPONENT_ACTION="skip"
-                    EXPOSE_OPENCLAW="n"
-                    OPENCLAW_PORT="18789"
-                    continue
+                    MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
                 fi
+
+                # Apply dependency rules for the toggled item
+                apply_deps "$master_index"
+
+                # LLM Stack (14) has runtime-conditional deps based on chosen sub-options
+                if [[ $master_index -eq 14 && ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
+                    local auto_selected=""
+                    if [[ ("$OPENWEBUI_COMPONENT_ACTION" == "install" || "$LIBRECHAT_COMPONENT_ACTION" == "install") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
+                        MASTER_SELECTIONS[3]=1
+                        ensure_active_index 3
+                        auto_selected+="Docker, "
+                    fi
+                    if [[ "$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then
+                        MASTER_SELECTIONS[10]=1
+                        ensure_active_index 10
+                        auto_selected+="CUDA, "
+                    fi
+                    if [[ (("$OPENWEBUI_COMPONENT_ACTION" == "install") || ("$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda")) && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[12]} -eq 0 && ${MASTER_INSTALLED_STATE[12]} -eq 0 ]]; then
+                        MASTER_SELECTIONS[12]=1
+                        ensure_active_index 12
+                        auto_selected+="NVIDIA CTK, "
+                    fi
+                    if [[ -n "$auto_selected" ]]; then
+                        echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
+                    fi
+                    # Re-run dep map now that CUDA/CTK may have been added
+                    apply_deps 10
+                    apply_deps 12
+                fi
+            elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
+                for master_index in "${ACTIVE_INDICES[@]}"; do
+                    if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 0 ]]; then
+                        if [[ $master_index -eq 15 && "$IS_DIFFERENT_USER" == false ]]; then
+                            continue
+                        fi
+                        if [[ $master_index -eq 14 || $master_index -eq 15 ]]; then
+                            continue
+                        fi
+                        MASTER_SELECTIONS[$master_index]=1
+                    fi
+                done
+                # Resolve deps for all newly-selected items
+                for master_index in "${!MASTER_SELECTIONS[@]}"; do
+                    [[ ${MASTER_SELECTIONS[$master_index]} -eq 1 ]] && apply_deps "$master_index"
+                done
+                echo -e "\n[Info] 'Select all' skips Local LLM Support and OpenClaw because they require explicit repair/install choices." && sleep 2
+            elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
+                break
+            elif [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+                echo -e "\nExiting."
+                exit 0
             else
-                MASTER_SELECTIONS[$master_index]=$((1 - MASTER_SELECTIONS[$master_index]))
+                echo -e "\nInvalid option." && sleep 1
             fi
+        done
 
-            # Apply dependency rules for the toggled item
-            apply_deps "$master_index"
+        # --- Final Pre-Installation Dependency Validation ---
 
-            # LLM Stack (14) has runtime-conditional deps based on chosen sub-options
-            if [[ $master_index -eq 14 && ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
-                local auto_selected=""
-                if [[ ("$OPENWEBUI_COMPONENT_ACTION" == "install" || "$LIBRECHAT_COMPONENT_ACTION" == "install") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
-                    MASTER_SELECTIONS[3]=1
-                    ensure_active_index 3
-                    auto_selected+="Docker, "
-                fi
-                if [[ "$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then
-                    MASTER_SELECTIONS[10]=1
-                    ensure_active_index 10
-                    auto_selected+="CUDA, "
-                fi
-                if [[ (("$OPENWEBUI_COMPONENT_ACTION" == "install") || ("$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda")) && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[12]} -eq 0 && ${MASTER_INSTALLED_STATE[12]} -eq 0 ]]; then
-                    MASTER_SELECTIONS[12]=1
-                    ensure_active_index 12
-                    auto_selected+="NVIDIA CTK, "
-                fi
-                if [[ -n "$auto_selected" ]]; then
-                    echo -e "\n[Auto-selected] ${auto_selected%, } required for Local LLM Stack components." && sleep 2
-                fi
-                # Re-run dep map now that CUDA/CTK may have been added
-                apply_deps 10
-                apply_deps 12
+        # LLM Stack (14) has runtime-conditional deps that depend on sub-choices
+        # made inside the LLM config dialog — handle these before the static map pass.
+        if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
+            if [[ ("$OPENWEBUI_COMPONENT_ACTION" == "install" || "$LIBRECHAT_COMPONENT_ACTION" == "install") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
+                MASTER_SELECTIONS[3]=1
+                ensure_active_index 3
+                echo -e "\n\e[1;33m[Validation Fix]\e[0m Docker auto-added as it is required by Open-WebUI/LibreChat."
             fi
-        elif [[ "$choice" == "a" || "$choice" == "A" ]]; then
-            for master_index in "${ACTIVE_INDICES[@]}"; do
-                if [[ ${MASTER_INSTALLED_STATE[$master_index]} -eq 0 ]]; then
-                    if [[ $master_index -eq 15 && "$IS_DIFFERENT_USER" == false ]]; then
-                        continue
-                    fi
-                    if [[ $master_index -eq 14 || $master_index -eq 15 ]]; then
-                        continue
-                    fi
-                    MASTER_SELECTIONS[$master_index]=1
-                fi
-            done
-            # Resolve deps for all newly-selected items
-            for master_index in "${!MASTER_SELECTIONS[@]}"; do
-                [[ ${MASTER_SELECTIONS[$master_index]} -eq 1 ]] && apply_deps "$master_index"
-            done
-            echo -e "\n[Info] 'Select all' skips Local LLM Support and OpenClaw because they require explicit repair/install choices." && sleep 2
-        elif [[ "$choice" == "i" || "$choice" == "I" ]]; then
-            break
-        elif [[ "$choice" == "q" || "$choice" == "Q" ]]; then
-            echo -e "\nExiting."
-            exit 0
-        else
-            echo -e "\nInvalid option." && sleep 1
+            if [[ "$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then
+                MASTER_SELECTIONS[10]=1
+                ensure_active_index 10
+                echo -e "\n\e[1;33m[Validation Fix]\e[0m CUDA auto-added as it is required by llama.cpp (CUDA backend)."
+            fi
+            if [[ (("$OPENWEBUI_COMPONENT_ACTION" == "install") || ("$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda")) && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[12]} -eq 0 && ${MASTER_INSTALLED_STATE[12]} -eq 0 ]]; then
+                MASTER_SELECTIONS[12]=1
+                ensure_active_index 12
+                echo -e "\n\e[1;33m[Validation Fix]\e[0m NVIDIA Container Toolkit auto-added as it is required by your LLM/GPU setup."
+            fi
         fi
-    done
 
-    # --- Final Pre-Installation Dependency Validation ---
+        # Static dependency map pass — catches anything not resolved during menu interaction
+        local validation_changed=0
+        validate_deps && validation_changed=0 || validation_changed=1
 
-    # LLM Stack (14) has runtime-conditional deps that depend on sub-choices
-    # made inside the LLM config dialog — handle these before the static map pass.
-    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
-        if [[ ("$OPENWEBUI_COMPONENT_ACTION" == "install" || "$LIBRECHAT_COMPONENT_ACTION" == "install") && ${MASTER_SELECTIONS[3]} -eq 0 && ${MASTER_INSTALLED_STATE[3]} -eq 0 ]]; then
-            MASTER_SELECTIONS[3]=1
-            ensure_active_index 3
-            echo -e "\n\e[1;33m[Validation Fix]\e[0m Docker auto-added as it is required by Open-WebUI/LibreChat."
+        if [[ $validation_changed -eq 1 ]]; then
+            echo -e "\e[1;36mDependencies resolved. Proceeding with installation...\e[0m"
+            sleep 3
         fi
-        if [[ "$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda" && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[10]} -eq 0 && ${MASTER_INSTALLED_STATE[10]} -eq 0 ]]; then
-            MASTER_SELECTIONS[10]=1
-            ensure_active_index 10
-            echo -e "\n\e[1;33m[Validation Fix]\e[0m CUDA auto-added as it is required by llama.cpp (CUDA backend)."
-        fi
-        if [[ (("$OPENWEBUI_COMPONENT_ACTION" == "install") || ("$LLAMA_COMPONENT_ACTION" == "install" && "$LLM_BACKEND_CHOICE" == "llama_cuda")) && "$HAS_NVIDIA_GPU" == true && ${MASTER_SELECTIONS[12]} -eq 0 && ${MASTER_INSTALLED_STATE[12]} -eq 0 ]]; then
-            MASTER_SELECTIONS[12]=1
-            ensure_active_index 12
-            echo -e "\n\e[1;33m[Validation Fix]\e[0m NVIDIA Container Toolkit auto-added as it is required by your LLM/GPU setup."
-        fi
-    fi
 
-    # Static dependency map pass — catches anything not resolved during menu interaction
-    local validation_changed=0
-    validate_deps && validation_changed=0 || validation_changed=1
+        # --- Disk Space Check ---
+        print_info "Checking available disk space..."
+        local required_gb=5                                                                                            # Base requirement for general system updates and basic tools
+        if [[ ${MASTER_SELECTIONS[10]} -eq 1 ]]; then required_gb=$((required_gb + 5)); fi                             # CUDA Toolkit
+        if [[ ${MASTER_SELECTIONS[12]} -eq 1 ]]; then required_gb=$((required_gb + 2)); fi                             # NVIDIA Container Toolkit & Docker usage
+        if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then required_gb=$((required_gb + 10)); fi                            # LLM Models and UI images
+        if [[ "$INSTALL_LIBRECHAT" == "y" || "$INSTALL_LIBRECHAT" == "Y" ]]; then required_gb=$((required_gb + 2)); fi # LibreChat Docker images
 
-    if [[ $validation_changed -eq 1 ]]; then
-        echo -e "\e[1;36mDependencies resolved. Proceeding with installation...\e[0m"
-        sleep 3
-    fi
+        local free_space_mb
+        free_space_mb=$(df -m "$TARGET_USER_HOME" | awk 'NR==2 {print $4}')
+        local free_space_gb=$((free_space_mb / 1024))
 
-    # --- Disk Space Check ---
-    print_info "Checking available disk space..."
-    local required_gb=5                                                                                            # Base requirement for general system updates and basic tools
-    if [[ ${MASTER_SELECTIONS[10]} -eq 1 ]]; then required_gb=$((required_gb + 5)); fi                             # CUDA Toolkit
-    if [[ ${MASTER_SELECTIONS[12]} -eq 1 ]]; then required_gb=$((required_gb + 2)); fi                             # NVIDIA Container Toolkit & Docker usage
-    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then required_gb=$((required_gb + 10)); fi                            # LLM Models and UI images
-    if [[ "$INSTALL_LIBRECHAT" == "y" || "$INSTALL_LIBRECHAT" == "Y" ]]; then required_gb=$((required_gb + 2)); fi # LibreChat Docker images
-
-    local free_space_mb
-    free_space_mb=$(df -m "$TARGET_USER_HOME" | awk 'NR==2 {print $4}')
-    local free_space_gb=$((free_space_mb / 1024))
-
-    if [[ "$free_space_gb" -lt "$required_gb" ]]; then
-        echo -e "\n\e[1;31m⚠️  WARNING: Low Disk Space\e[0m"
-        echo -e "You have selected options that require approximately \e[1;33m${required_gb}GB\e[0m of free space."
-        echo -e "Your target partition ($TARGET_USER_HOME) only has \e[1;31m${free_space_gb}GB\e[0m available."
-        read -p "Do you want to proceed anyway? [y/N]: " proceed_space
-        if [[ "$proceed_space" != "y" && "$proceed_space" != "Y" ]]; then
-            echo -e "\n❌ Aborting installation to prevent disk exhaustion."
-            exit 1
-        fi
-    else
-        print_success "Disk space check passed (Required: ~${required_gb}GB, Available: ${free_space_gb}GB)."
-    fi
-
-    # --- RAM / Memory Check ---
-    if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
-        print_info "Checking available system memory for LLM inference..."
-        local total_ram_kb
-        total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        local total_ram_gb=$((total_ram_kb / 1024 / 1024))
-
-        if [[ "$total_ram_gb" -lt 16 ]]; then
-            echo -e "\n\e[1;31m⚠️  WARNING: Low System Memory\e[0m"
-            echo -e "You selected the Local LLM Stack, which generally requires at least \e[1;33m16GB\e[0m of RAM."
-            echo -e "Your system only has \e[1;31m${total_ram_gb}GB\e[0m of total memory."
-            read -p "Do you want to proceed anyway? Performance may be degraded. [y/N]: " proceed_ram
-            if [[ "$proceed_ram" != "y" && "$proceed_ram" != "Y" ]]; then
-                echo -e "\n❌ Aborting installation to prevent system instability."
+        if [[ "$free_space_gb" -lt "$required_gb" ]]; then
+            echo -e "\n\e[1;31m⚠️  WARNING: Low Disk Space\e[0m"
+            echo -e "You have selected options that require approximately \e[1;33m${required_gb}GB\e[0m of free space."
+            echo -e "Your target partition ($TARGET_USER_HOME) only has \e[1;31m${free_space_gb}GB\e[0m available."
+            read -p "Do you want to proceed anyway? [y/N]: " proceed_space
+            if [[ "$proceed_space" != "y" && "$proceed_space" != "Y" ]]; then
+                echo -e "\n❌ Aborting installation to prevent disk exhaustion."
                 exit 1
             fi
         else
-            print_success "Memory check passed (${total_ram_gb}GB total RAM available)."
+            print_success "Disk space check passed (Required: ~${required_gb}GB, Available: ${free_space_gb}GB)."
         fi
-    fi
+
+        # --- RAM / Memory Check ---
+        if [[ ${MASTER_SELECTIONS[14]} -eq 1 ]]; then
+            print_info "Checking available system memory for LLM inference..."
+            local total_ram_kb
+            total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+            local total_ram_gb=$((total_ram_kb / 1024 / 1024))
+
+            if [[ "$total_ram_gb" -lt 16 ]]; then
+                echo -e "\n\e[1;31m⚠️  WARNING: Low System Memory\e[0m"
+                echo -e "You selected the Local LLM Stack, which generally requires at least \e[1;33m16GB\e[0m of RAM."
+                echo -e "Your system only has \e[1;31m${total_ram_gb}GB\e[0m of total memory."
+                read -p "Do you want to proceed anyway? Performance may be degraded. [y/N]: " proceed_ram
+                if [[ "$proceed_ram" != "y" && "$proceed_ram" != "Y" ]]; then
+                    echo -e "\n❌ Aborting installation to prevent system instability."
+                    exit 1
+                fi
+            else
+                print_success "Memory check passed (${total_ram_gb}GB total RAM available)."
+            fi
+        fi
+    fi # end: if [[ "$RESUME_MODE" == false ]]
 
     # Configure API keys after menu selection, before installation tasks begin
     setup_env_secrets
@@ -5500,9 +5681,61 @@ main() {
 
         for i in "${!MASTER_SELECTIONS[@]}"; do
             if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
-                ${MASTER_FUNCS[$i]}
+                # Use if/fi so a step that returns non-zero (e.g. CTK skipped because
+                # NVIDIA module not yet loaded) doesn't abort the whole script.
+                if ${MASTER_FUNCS[$i]}; then
+                    MASTER_INSTALLED_STATE[$i]=1
+                fi
+
+                # ── Reboot checkpoint after NVIDIA driver (index 7) ──────────────
+                # CUDA (10), Container Toolkit (12), cuDNN (13), and LLM (14) all
+                # need the kernel module loaded AND nvidia-smi functional. On
+                # passthrough VMs the GPU is not visible until ESXi params are set
+                # and the system reboots. Pause here and resume automatically.
+                if [[ $i -eq 7 && "${POST_INSTALL_ACTIONS[*]}" == *"reboot"* ]]; then
+                    local _gpu_pending=0
+                    local _gpi
+                    for _gpi in 10 12 13 14; do
+                        if [[ ${MASTER_SELECTIONS[$_gpi]:-0} -eq 1 && ${MASTER_INSTALLED_STATE[$_gpi]:-0} -eq 0 ]]; then
+                            _gpu_pending=1
+                            break
+                        fi
+                    done
+                    if [[ $_gpu_pending -eq 1 ]]; then
+                        echo ""
+                        echo -e "\e[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
+                        echo -e "\e[1;33m  NVIDIA driver installed — reboot required before GPU stack.\e[0m"
+                        echo -e "\e[1;36m  Remaining GPU components will resume automatically after reboot.\e[0m"
+                        if systemd-detect-virt --quiet 2>/dev/null; then
+                            echo -e "\e[1;33m  ⚠️  ESXi VM: configure PCIe passthrough params in vSphere FIRST.\e[0m"
+                        fi
+                        echo -e "\e[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
+                        save_resume_state
+                        install_resume_service
+                        local _rbc
+                        read -p "Reboot now? [Y/n]: " _rbc
+                        if [[ "${_rbc:-Y}" == "Y" || "${_rbc:-Y}" == "y" ]]; then
+                            print_info "Rebooting — installation will resume automatically after login..."
+                            sudo reboot
+                            exit 0
+                        fi
+                        echo -e "\e[1;33m⚠️  Skipping reboot — GPU installs may fail without the kernel module.\e[0m"
+                    fi
+                fi
             fi
         done
+
+        # If we resumed and all pending steps are now done, clear the resume state.
+        if [[ "$RESUME_MODE" == true ]]; then
+            local _all_done=1
+            for i in "${!MASTER_SELECTIONS[@]}"; do
+                if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
+                    _all_done=0
+                    break
+                fi
+            done
+            [[ $_all_done -eq 1 ]] && clear_resume_state
+        fi
 
         print_success "Selected installations are complete."
         verify_installations
@@ -5659,12 +5892,128 @@ main() {
     fi
 
     if [[ "${POST_INSTALL_ACTIONS[*]}" == *"reboot"* ]]; then
-        echo -e "\n\e[1;33mA system reboot is highly recommended to ensure all drivers (like NVIDIA GPU drivers) are loaded correctly.\e[0m"
+        # Determine whether any selected items still need to run after the reboot
+        # (e.g. NVIDIA Container Toolkit was skipped because the kernel module wasn't loaded yet).
+        local _pending_after_reboot=0
+        for i in "${!MASTER_SELECTIONS[@]}"; do
+            if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
+                _pending_after_reboot=1
+                break
+            fi
+        done
+
+        echo -e "\n\e[1;33mA system reboot is required to activate the NVIDIA kernel module.\e[0m"
+        if [[ $_pending_after_reboot -eq 1 ]]; then
+            echo -e "\e[1;36m  The following components need the NVIDIA module and will continue automatically after reboot:\e[0m"
+            for i in "${!MASTER_SELECTIONS[@]}"; do
+                if [[ ${MASTER_SELECTIONS[$i]} -eq 1 && ${MASTER_INSTALLED_STATE[$i]} -eq 0 ]]; then
+                    echo -e "    • ${MASTER_OPTIONS[$i]}"
+                fi
+            done
+            echo ""
+        fi
         read -p "Do you want to reboot now? [y/N]: " reboot_choice
         if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
+            if [[ $_pending_after_reboot -eq 1 ]]; then
+                save_resume_state
+                install_resume_service
+                echo -e "\e[1;32m✅ Installation will resume automatically after reboot.\e[0m"
+                sleep 2
+            fi
             print_info "Rebooting system..."
             sudo reboot
+        elif [[ $_pending_after_reboot -eq 1 ]]; then
+            echo -e "\n\e[1;33m⚠️  Some components still need to be installed after reboot.\e[0m"
+            echo -e "    Reboot manually, then re-run:  bash $(realpath "$0") --resume"
         fi
+    fi
+}
+
+# ── Resume-after-reboot helpers ───────────────────────────────────────────────
+
+# Write current installation state to disk so it can be restored after reboot.
+# Also records all config variables that drive install functions.
+save_resume_state() {
+    sudo mkdir -p "$(dirname "$RESUME_STATE_FILE")"
+    sudo tee "$RESUME_STATE_FILE" >/dev/null <<EOF
+# ubuntu-prep-setup.sh resume state — written $(date)
+# Sourced by the script when invoked with --resume.
+
+RESUME_SELECTIONS="${MASTER_SELECTIONS[*]}"
+RESUME_COMPLETED="${MASTER_INSTALLED_STATE[*]}"
+RESUME_ACTIVE="${ACTIVE_INDICES[*]}"
+
+# User / environment
+RESUME_TARGET_USER="${TARGET_USER}"
+RESUME_TARGET_USER_HOME="${TARGET_USER_HOME}"
+RESUME_IS_DIFFERENT_USER="${IS_DIFFERENT_USER}"
+RESUME_HAS_NVIDIA_GPU="${HAS_NVIDIA_GPU}"
+
+# LLM config
+RESUME_LLM_BACKEND_CHOICE="${LLM_BACKEND_CHOICE:-}"
+RESUME_FRONTEND_BACKEND_TARGET="${FRONTEND_BACKEND_TARGET:-}"
+RESUME_LLAMA_CTX_SIZE="${LLAMA_CTX_SIZE:-65536}"
+RESUME_LOAD_DEFAULT_MODEL="${LOAD_DEFAULT_MODEL:-n}"
+RESUME_RUN_LLAMA_BENCH="${RUN_LLAMA_BENCH:-n}"
+RESUME_INSTALL_LLAMA_SERVICE="${INSTALL_LLAMA_SERVICE:-n}"
+RESUME_EXPOSE_LLM_ENGINE="${EXPOSE_LLM_ENGINE:-n}"
+RESUME_INSTALL_OPENWEBUI="${INSTALL_OPENWEBUI:-n}"
+RESUME_INSTALL_LIBRECHAT="${INSTALL_LIBRECHAT:-n}"
+RESUME_LLAMACPP_MODEL_REPO="${LLAMACPP_MODEL_REPO:-}"
+RESUME_OLLAMA_PULL_MODEL="${OLLAMA_PULL_MODEL:-}"
+
+# OpenClaw config
+RESUME_OPENCLAW_RELEASE_CHANNEL="${OPENCLAW_RELEASE_CHANNEL:-latest}"
+RESUME_EXPOSE_OPENCLAW="${EXPOSE_OPENCLAW:-n}"
+RESUME_OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+
+# Script path (so the service can re-run the right file)
+RESUME_SCRIPT_PATH="$(realpath "$0")"
+EOF
+    sudo chmod 600 "$RESUME_STATE_FILE"
+    print_info "Resume state saved to $RESUME_STATE_FILE"
+}
+
+# Install a oneshot systemd service that re-runs this script with --resume
+# once on the next boot, then disables itself.
+install_resume_service() {
+    local script_path
+    script_path=$(realpath "$0")
+    sudo tee /etc/systemd/system/ubuntu-prep-resume.service >/dev/null <<EOF
+[Unit]
+Description=Ubuntu Prep Setup — Resume after reboot
+After=network-online.target
+Wants=network-online.target
+# Run once then disable
+ConditionPathExists=${RESUME_STATE_FILE}
+
+[Service]
+Type=oneshot
+# Run as root so sudo commands inside the script work
+ExecStart=/bin/bash ${script_path} --resume
+ExecStartPost=/bin/systemctl disable ubuntu-prep-resume.service
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable ubuntu-prep-resume.service
+    print_info "Resume service installed — script will continue automatically after reboot."
+}
+
+# Remove resume state file and service after a successful full run.
+clear_resume_state() {
+    if [[ -f "$RESUME_STATE_FILE" ]]; then
+        sudo rm -f "$RESUME_STATE_FILE"
+        print_info "Resume state cleared."
+    fi
+    if systemctl list-unit-files ubuntu-prep-resume.service &>/dev/null; then
+        sudo systemctl disable ubuntu-prep-resume.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/ubuntu-prep-resume.service
+        sudo systemctl daemon-reload 2>/dev/null || true
     fi
 }
 
