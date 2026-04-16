@@ -4,7 +4,6 @@
 #   format_component_status_label
 #   format_component_action_label
 #   record_component_outcome
-#   need_local_llm_work
 #   need_frontend_backend_target
 #   available_backend_count
 #   get_llama_{repo,cache,runtime_pid,runtime_log}_path
@@ -23,7 +22,6 @@ setup() {
     eval "$(extract_function format_component_status_label)"
     eval "$(extract_function format_component_action_label)"
     eval "$(extract_function record_component_outcome)"
-    eval "$(extract_function need_local_llm_work)"
     eval "$(extract_function need_frontend_backend_target)"
     eval "$(extract_function available_backend_count)"
     eval "$(extract_function get_llama_repo_path)"
@@ -145,37 +143,6 @@ setup() {
     record_component_outcome "Ollama" "install" "failed"
     record_component_outcome "llama.cpp" "repair" "failed"
     [ "${#FAILED_COMPONENTS[@]}" -eq 2 ]
-}
-
-# ─── need_local_llm_work ───────────────────────────────────────────────
-
-@test "need_llm_work: false when all component actions are skip" {
-    run need_local_llm_work
-    [ "$status" -eq 1 ]
-}
-
-@test "need_llm_work: true when LLAMA action is install" {
-    LLAMA_COMPONENT_ACTION="install"
-    run need_local_llm_work
-    [ "$status" -eq 0 ]
-}
-
-@test "need_llm_work: true when OLLAMA action is repair" {
-    OLLAMA_COMPONENT_ACTION="repair"
-    run need_local_llm_work
-    [ "$status" -eq 0 ]
-}
-
-@test "need_llm_work: true when OPENWEBUI action is install" {
-    OPENWEBUI_COMPONENT_ACTION="install"
-    run need_local_llm_work
-    [ "$status" -eq 0 ]
-}
-
-@test "need_llm_work: true when LIBRECHAT action is install" {
-    LIBRECHAT_COMPONENT_ACTION="install"
-    run need_local_llm_work
-    [ "$status" -eq 0 ]
 }
 
 # ─── need_frontend_backend_target ─────────────────────────────────────

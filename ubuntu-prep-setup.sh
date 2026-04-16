@@ -91,12 +91,9 @@ OPENCLAW_PORT="18789"
 LIBRECHAT_PORT="3080"
 OLLAMA_PULL_MODEL=""
 LLAMACPP_MODEL_REPO=""
-AUTO_UPDATE_OPENWEBUI="n"
 REPAIRED_COMPONENTS=()
 INSTALLED_COMPONENTS=()
 FAILED_COMPONENTS=()
-# shellcheck disable=SC2034 # Reserved for future use
-EXPOSE_LLAMA_SERVER="n"
 RUN_LLAMA_BENCH="n"
 LOAD_DEFAULT_MODEL="n"
 LLM_DEFAULT_MODEL_CHOICE=""
@@ -114,12 +111,10 @@ LLAMA_FIT="n"    # --fit on: auto-calculate ngl to fill VRAM
 LLAMA_FIT_CTX="" # --fit-ctx N: minimum ctx --fit will not shrink below
 
 # ─── Headless Mode ────────────────────────────────────────────────
-# Run non-interactively with sensible defaults. Every HEADLESS_* var
-# can be set as an environment variable before invocation.
+# Run non-interactively with sensible defaults.
 #
 # Usage:
 #   bash ubuntu-prep-setup.sh --headless
-#   HEADLESS_GOALS=llm HEADLESS_VRAM=24 bash ubuntu-prep-setup.sh --headless
 HEADLESS_MODE=false
 for arg in "$@"; do
     case "$arg" in
@@ -128,46 +123,10 @@ for arg in "$@"; do
     esac
 done
 
-HEADLESS_USER="${HEADLESS_USER:-}" # empty = current user
-HEADLESS_TIMEZONE="${HEADLESS_TIMEZONE:-America/Los_Angeles}"
-HEADLESS_GOALS="${HEADLESS_GOALS:-openclaw,llm}"           # subset of: openclaw,vgpu,llm
-HEADLESS_LLM_BACKEND="${HEADLESS_LLM_BACKEND:-ollama}"     # ollama | llama_cpu | llama_cuda
-HEADLESS_VRAM="${HEADLESS_VRAM:-16}"                       # 8|16|24|32|48|72|96
-HEADLESS_MODEL_CATEGORY="${HEADLESS_MODEL_CATEGORY:-chat}" # chat|code|moe|vision
-HEADLESS_INSTALL_OPENWEBUI="${HEADLESS_INSTALL_OPENWEBUI:-y}"
-HEADLESS_INSTALL_LIBRECHAT="${HEADLESS_INSTALL_LIBRECHAT:-n}"
-HEADLESS_EXPOSE_LLM="${HEADLESS_EXPOSE_LLM:-n}"
-HEADLESS_EXPOSE_OPENCLAW="${HEADLESS_EXPOSE_OPENCLAW:-n}"
-HEADLESS_LOAD_DEFAULT_MODEL="${HEADLESS_LOAD_DEFAULT_MODEL:-y}"
-HEADLESS_INSTALL_LLAMA_SERVICE="${HEADLESS_INSTALL_LLAMA_SERVICE:-n}"
-HEADLESS_ENABLE_UFW="${HEADLESS_ENABLE_UFW:-n}"
-HEADLESS_INSTALL_VGPU="${HEADLESS_INSTALL_VGPU:-n}"
-HEADLESS_REBOOT="${HEADLESS_REBOOT:-n}"
-HEADLESS_SECURITY_OPTS="${HEADLESS_SECURITY_OPTS:-c}" # "a"=all, "c"=confirm none, or "1,2,5"
 HEADLESS_CTX_SIZE="${HEADLESS_CTX_SIZE:-}"            # empty = auto from VRAM tier
 HEADLESS_CACHE_TYPE_K="${HEADLESS_CACHE_TYPE_K:-}"    # empty = auto; f16|q8_0|q4_0|bf16|turbo3|turbo4|...
 HEADLESS_CPU_MOE="${HEADLESS_CPU_MOE:-y}"             # y|n — offload MoE expert layers to CPU (default: on)
 HEADLESS_UBATCH="${HEADLESS_UBATCH:-}"                # empty = auto from VRAM tier; e.g. 1024
-
-# ask — drop-in replacement for `read -p`.
-# Interactive: reads from user; if input is empty, applies $default.
-# Headless:    echoes the default and assigns without prompting.
-# Usage: ask "Prompt text: " VARNAME "default"
-ask() {
-    local prompt="$1"
-    local var="$2"
-    local default="$3"
-
-    if [ "$HEADLESS_MODE" = true ]; then
-        echo -e "  \e[2m[headless] ${prompt}${default}\e[0m"
-        printf -v "$var" '%s' "$default"
-    else
-        read -rp "$prompt" "${var?}"
-        if [ -z "${!var}" ]; then
-            printf -v "$var" '%s' "$default"
-        fi
-    fi
-}
 
 reset_local_ai_component_state() {
     LLAMA_COMPONENT_ACTION="skip"
@@ -265,10 +224,6 @@ record_component_outcome() {
             FAILED_COMPONENTS+=("$component")
             ;;
     esac
-}
-
-need_local_llm_work() {
-    [[ "$LLAMA_COMPONENT_ACTION" != "skip" || "$OLLAMA_COMPONENT_ACTION" != "skip" || "$OPENWEBUI_COMPONENT_ACTION" != "skip" || "$LIBRECHAT_COMPONENT_ACTION" != "skip" ]]
 }
 
 need_frontend_backend_target() {
@@ -1106,13 +1061,6 @@ install_gemini_cli() {
 export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"
 [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\"
 exec gemini \"\$@\"
-NODE_BIN=\$(dirname \$(command -v node 2>/dev/null) 2>/dev/null)
-if [ -x \"\$NODE_BIN/gemini\" ]; then
-    exec \"\$NODE_BIN/gemini\" \"\$@\"
-else
-    # Fallback to npx to guarantee execution if path resolution fails
-    exec npx -y @google/gemini-cli \"\$@\"
-fi
 EOF"
     sudo chmod +x /usr/local/bin/gemini
 
@@ -3574,36 +3522,6 @@ SERVICEEOF
         "${docker_cmd[@]}"
         print_success "Open-WebUI installed and running on network host."
 
-        if [[ "$AUTO_UPDATE_OPENWEBUI" == "y" ]]; then
-            print_info "Configuring systemd to auto-update Open-WebUI on boot..."
-            sudo bash -c "cat <<EOF > /usr/local/bin/update-open-webui.sh
-#!/bin/bash
-sudo docker pull ghcr.io/open-webui/open-webui:main
-sudo docker stop open-webui 2>/dev/null || true
-sudo docker rm open-webui 2>/dev/null || true
-${docker_cmd[*]}
-EOF"
-            sudo chmod +x /usr/local/bin/update-open-webui.sh
-
-            sudo bash -c "cat <<EOF > /etc/systemd/system/open-webui-update.service
-[Unit]
-Description=Auto-update Open-WebUI Docker Container
-After=docker.service network-online.target
-Wants=network-online.target
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/update-open-webui.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF"
-            sudo systemctl daemon-reload
-            sudo systemctl enable open-webui-update.service
-            print_success "Open-WebUI auto-update service enabled."
-        fi
 
         print_info "NOTE: When you first open Open-WebUI, it will say 'Model not selected'."
         print_info "You must click the dropdown at the top of the screen to select your loaded model."
