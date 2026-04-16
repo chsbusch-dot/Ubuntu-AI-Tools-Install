@@ -5173,6 +5173,22 @@ main() {
     start_sudo_keepalive
     check_os
 
+    # ── Detect an interrupted installation from a previous run ───────────────
+    # If the state file exists but --resume wasn't passed, offer to pick up
+    # where the last run left off (e.g. after a post-NVIDIA-driver reboot).
+    if [[ "$RESUME_MODE" == false && -f "$RESUME_STATE_FILE" ]]; then
+        echo ""
+        echo -e "\e[1;36m🔄 Detected a previous interrupted installation.\e[0m"
+        local _resume_choice
+        read -p "Resume where it left off? [Y/n]: " _resume_choice
+        if [[ "${_resume_choice:-Y}" == "Y" || "${_resume_choice:-Y}" == "y" ]]; then
+            RESUME_MODE=true
+        else
+            echo -e "Starting fresh — discarding previous state."
+            sudo rm -f "$RESUME_STATE_FILE" 2>/dev/null || true
+        fi
+    fi
+
     # ── Resume mode: restore state from before the reboot ────────────────────
     if [[ "$RESUME_MODE" == true ]]; then
         if [[ ! -f "$RESUME_STATE_FILE" ]]; then
@@ -5711,11 +5727,12 @@ main() {
                         fi
                         echo -e "\e[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
                         save_resume_state
-                        install_resume_service
+                        echo -e "\e[1;36m  ✅ Progress saved. After reboot, just re-run this script — it will\e[0m"
+                        echo -e "\e[1;36m     offer to continue automatically from where it left off.\e[0m"
                         local _rbc
                         read -p "Reboot now? [Y/n]: " _rbc
                         if [[ "${_rbc:-Y}" == "Y" || "${_rbc:-Y}" == "y" ]]; then
-                            print_info "Rebooting — installation will resume automatically after login..."
+                            print_info "Rebooting..."
                             sudo reboot
                             exit 0
                         fi
@@ -5916,15 +5933,15 @@ main() {
         if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
             if [[ $_pending_after_reboot -eq 1 ]]; then
                 save_resume_state
-                install_resume_service
-                echo -e "\e[1;32m✅ Installation will resume automatically after reboot.\e[0m"
+                echo -e "\e[1;32m✅ Progress saved. After reboot, re-run this script — it will offer to\e[0m"
+                echo -e "\e[1;32m   continue from where it left off.\e[0m"
                 sleep 2
             fi
             print_info "Rebooting system..."
             sudo reboot
         elif [[ $_pending_after_reboot -eq 1 ]]; then
-            echo -e "\n\e[1;33m⚠️  Some components still need to be installed after reboot.\e[0m"
-            echo -e "    Reboot manually, then re-run:  bash $(realpath "$0") --resume"
+            echo -e "\n\e[1;33m⚠️  Some components still need to be installed.\e[0m"
+            echo -e "    Reboot when ready, then re-run this script to continue."
         fi
     fi
 }
