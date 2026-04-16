@@ -1,0 +1,57 @@
+name: OpenClaw Compatibility Check
+
+on:
+  schedule:
+    # Run daily at 08:00 UTC (1:00 AM Pacific)
+    - cron: '0 8 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-openclaw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check OpenClaw npm package & installer compatibility
+        run: bash tests/check-openclaw-compat.sh
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '⚠️ OpenClaw compatibility check failed';
+            // Don't create duplicate issues
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'openclaw-compat',
+            });
+            if (issues.length > 0) {
+              console.log('Open issue already exists, skipping creation');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                'The daily OpenClaw compatibility check failed.',
+                '',
+                'This means the `openclaw` npm package or installer may have changed',
+                'in a way that breaks our direct `npm install -g openclaw` approach',
+                'in `ubuntu-prep-setup.sh`.',
+                '',
+                '**Action needed:** Review the [workflow run](' +
+                  `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` +
+                  ') and update `install_openclaw()` if necessary.',
+                '',
+                'Common changes to watch for:',
+                '- `bin` field in package.json renamed (binary no longer called `openclaw`)',
+                '- `onboard` subcommand renamed or removed',
+                '- Install method changed from npm to something else',
+                '- Package moved to a different npm scope (e.g. `@openclaw/cli`)',
+              ].join('\n'),
+              labels: ['openclaw-compat'],
+            });
