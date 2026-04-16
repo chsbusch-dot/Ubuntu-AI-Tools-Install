@@ -5984,44 +5984,12 @@ RESUME_OPENCLAW_RELEASE_CHANNEL="${OPENCLAW_RELEASE_CHANNEL:-latest}"
 RESUME_EXPOSE_OPENCLAW="${EXPOSE_OPENCLAW:-n}"
 RESUME_OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
 
-# Script path (so the service can re-run the right file)
-RESUME_SCRIPT_PATH="$(realpath "$0")"
 EOF
     sudo chmod 600 "$RESUME_STATE_FILE"
     print_info "Resume state saved to $RESUME_STATE_FILE"
 }
 
-# Install a oneshot systemd service that re-runs this script with --resume
-# once on the next boot, then disables itself.
-install_resume_service() {
-    local script_path
-    script_path=$(realpath "$0")
-    sudo tee /etc/systemd/system/ubuntu-prep-resume.service >/dev/null <<EOF
-[Unit]
-Description=Ubuntu Prep Setup — Resume after reboot
-After=network-online.target
-Wants=network-online.target
-# Run once then disable
-ConditionPathExists=${RESUME_STATE_FILE}
-
-[Service]
-Type=oneshot
-# Run as root so sudo commands inside the script work
-ExecStart=/bin/bash ${script_path} --resume
-ExecStartPost=/bin/systemctl disable ubuntu-prep-resume.service
-StandardOutput=journal+console
-StandardError=journal+console
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable ubuntu-prep-resume.service
-    print_info "Resume service installed — script will continue automatically after reboot."
-}
-
-# Remove resume state file and service after a successful full run.
+# Remove resume state file and (if present from an older run) the legacy service.
 clear_resume_state() {
     if [[ -f "$RESUME_STATE_FILE" ]]; then
         sudo rm -f "$RESUME_STATE_FILE"
