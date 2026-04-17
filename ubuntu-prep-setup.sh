@@ -123,10 +123,10 @@ for arg in "$@"; do
     esac
 done
 
-HEADLESS_CTX_SIZE="${HEADLESS_CTX_SIZE:-}"            # empty = auto from VRAM tier
-HEADLESS_CACHE_TYPE_K="${HEADLESS_CACHE_TYPE_K:-}"    # empty = auto; f16|q8_0|q4_0|bf16|turbo3|turbo4|...
-HEADLESS_CPU_MOE="${HEADLESS_CPU_MOE:-y}"             # y|n — offload MoE expert layers to CPU (default: on)
-HEADLESS_UBATCH="${HEADLESS_UBATCH:-}"                # empty = auto from VRAM tier; e.g. 1024
+HEADLESS_CTX_SIZE="${HEADLESS_CTX_SIZE:-}"         # empty = auto from VRAM tier
+HEADLESS_CACHE_TYPE_K="${HEADLESS_CACHE_TYPE_K:-}" # empty = auto; f16|q8_0|q4_0|bf16|turbo3|turbo4|...
+HEADLESS_CPU_MOE="${HEADLESS_CPU_MOE:-y}"          # y|n — offload MoE expert layers to CPU (default: on)
+HEADLESS_UBATCH="${HEADLESS_UBATCH:-}"             # empty = auto from VRAM tier; e.g. 1024
 
 reset_local_ai_component_state() {
     LLAMA_COMPONENT_ACTION="skip"
@@ -3526,7 +3526,6 @@ SERVICEEOF
         "${docker_cmd[@]}"
         print_success "Open-WebUI installed and running on network host."
 
-
         print_info "NOTE: When you first open Open-WebUI, it will say 'Model not selected'."
         print_info "You must click the dropdown at the top of the screen to select your loaded model."
         if [[ "$backend_target" == "llama" ]]; then
@@ -4283,9 +4282,9 @@ _render_summary() {
     [[ "$mode" == "file" ]] && is_file=1
 
     # ── Mode-aware output helpers ────────────────────────────────────
-    _banner()    { if [[ $is_file -eq 1 ]]; then echo "===== $1 ====="; else print_header "$1"; fi; }
-    _section()   { if [[ $is_file -eq 1 ]]; then echo "$1"; else echo -e "\e[1;36m$1\e[0m"; fi; }
-    _item()      { if [[ $is_file -eq 1 ]]; then echo "$1"; else print_info "$1"; fi; }
+    _banner() { if [[ $is_file -eq 1 ]]; then echo "===== $1 ====="; else print_header "$1"; fi; }
+    _section() { if [[ $is_file -eq 1 ]]; then echo "$1"; else echo -e "\e[1;36m$1\e[0m"; fi; }
+    _item() { if [[ $is_file -eq 1 ]]; then echo "$1"; else print_info "$1"; fi; }
     _subheader() { if [[ $is_file -eq 1 ]]; then echo "  -> $1"; else echo -e "  \e[1;36m-> $1\e[0m"; fi; }
 
     local nvm_cmd="export NVM_DIR=\"$TARGET_USER_HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && source \"\$NVM_DIR/nvm.sh\""
@@ -4372,15 +4371,15 @@ _render_summary() {
 
     if sudo test -s "$TARGET_USER_HOME/.nvm/nvm.sh"; then
         _item "Node.js & NPM (via NVM):"
-        sudo -u "$TARGET_USER" bash -c "$nvm_cmd; echo -n 'Node: '; node -v; echo -n 'NPM:  '; npm -v" 2>/dev/null \
-            || echo "  (run as $TARGET_USER with NVM loaded)"
+        sudo -u "$TARGET_USER" bash -c "$nvm_cmd; echo -n 'Node: '; node -v; echo -n 'NPM:  '; npm -v" 2>/dev/null ||
+            echo "  (run as $TARGET_USER with NVM loaded)"
         echo ""
     fi
 
     if [ -f "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
         _item "Homebrew:"
-        sudo -u "$TARGET_USER" bash -c "$brew_cmd; brew --version | head -n 1" 2>/dev/null \
-            || echo "  Installed (source $TARGET_USER_HOME/.zshrc to activate)"
+        sudo -u "$TARGET_USER" bash -c "$brew_cmd; brew --version | head -n 1" 2>/dev/null ||
+            echo "  Installed (source $TARGET_USER_HOME/.zshrc to activate)"
         echo ""
     fi
 
@@ -4628,8 +4627,8 @@ CURLEOF
 
     local shell_changed=0 path_changed=0
     [[ "$unique_actions" == *"zsh"* ]] && shell_changed=1
-    if [[ "$unique_actions" == *"nvm"* || "$unique_actions" == *"brew"* \
-         || "$unique_actions" == *"cuda"* || "$unique_actions" == *"openclaw"* ]]; then
+    if [[ "$unique_actions" == *"nvm"* || "$unique_actions" == *"brew"* ||
+        "$unique_actions" == *"cuda"* || "$unique_actions" == *"openclaw"* ]]; then
         path_changed=1
     fi
 
@@ -4978,7 +4977,9 @@ main() {
         echo ""
         echo -e "\e[1;36m🔄 Resuming ubuntu-prep-setup.sh after reboot...\e[0m"
         # shellcheck source=/dev/null
-        source "$RESUME_STATE_FILE"
+        # The state file is root-owned (chmod 600), so we must read it via
+        # sudo and pipe into source through process substitution.
+        source <(sudo cat "$RESUME_STATE_FILE")
 
         # Restore global arrays from space-separated strings
         read -ra MASTER_SELECTIONS <<<"$RESUME_SELECTIONS"
