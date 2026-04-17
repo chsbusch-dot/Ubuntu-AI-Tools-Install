@@ -563,8 +563,8 @@ determine_target_user() {
     echo -e "\n\e[1;36mSelect Target User for Installation:\e[0m"
     echo "This script runs system-wide installations (like Docker, Python, CUDA) using 'sudo'."
     echo "User-specific tools (like NVM, Oh My Zsh, OpenClaw) will be installed for the user you select below."
-    echo "  1. Current user ($USER)"
-    echo "  2. A different/new user (e.g., a dedicated 'openclaw' user)"
+    echo "  1. Sudo user ($USER)  — install everything for the user running this script"
+    echo "  2. A new or different standard user (e.g., a dedicated 'openclaw' user — recommended for OpenClaw)"
     local choice
     while true; do
         read -p "Your choice [1/2]: " choice
