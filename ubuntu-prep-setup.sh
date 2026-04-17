@@ -243,9 +243,9 @@ ask_yn() {
     while true; do
         read -r -p "$prompt" reply
         case "${reply:-$default}" in
-            y|Y) return 0 ;;
-            n|N) return 1 ;;
-            *)   echo "  Please enter y or n." ;;
+            y | Y) return 0 ;;
+            n | N) return 1 ;;
+            *) echo "  Please enter y or n." ;;
         esac
     done
 }
@@ -5016,7 +5016,6 @@ main() {
         echo -e "  Target user:         $TARGET_USER"
         echo ""
         detect_gpu # re-detect GPU (now loaded after reboot)
-        setup_env_secrets
         # Jump straight to installation — skip all menus
     else
         determine_target_user
@@ -5464,8 +5463,11 @@ main() {
         fi
     fi # end: if [[ "$RESUME_MODE" == false ]]
 
-    # Configure API keys after menu selection, before installation tasks begin
-    setup_env_secrets
+    # Configure API keys after menu selection, before installation tasks begin.
+    # Skipped on resume — keys were already configured in the original run.
+    if [[ "$RESUME_MODE" == false ]]; then
+        setup_env_secrets
+    fi
 
     echo -e "\n--- Starting Installation ---"
     local something_installed=0
