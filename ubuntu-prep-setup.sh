@@ -230,6 +230,26 @@ need_frontend_backend_target() {
     [[ "$OPENWEBUI_COMPONENT_ACTION" != "skip" || "$LIBRECHAT_COMPONENT_ACTION" != "skip" || "$OPENCLAW_COMPONENT_ACTION" != "skip" ]]
 }
 
+# Prompt for a yes/no answer, looping until y/Y/n/N or Enter is received.
+# Usage:  if ask_yn "Prompt [y/N]: " "n"; then ...
+# Arg 1: prompt string (including bracket hint)
+# Arg 2: default — "y" or "n" (default: "n")
+# Redirects (e.g. </dev/tty) are forwarded to the inner read.
+# Returns 0 for yes, 1 for no.
+ask_yn() {
+    local prompt="$1"
+    local default="${2:-n}"
+    local reply
+    while true; do
+        read -r -p "$prompt" reply
+        case "${reply:-$default}" in
+            y|Y) return 0 ;;
+            n|N) return 1 ;;
+            *)   echo "  Please enter y or n." ;;
+        esac
+    done
+}
+
 llama_variant_to_model_backend() {
     local variant="$1"
 
@@ -705,8 +725,7 @@ EOF
 
     # Interactive prompt for API keys
     print_info "API keys configuration file is ready at $TARGET_USER_HOME/.env.secrets"
-    read -p "Do you want to edit your API keys for '$TARGET_USER' now? [y/N]: " add_keys_now
-    if [[ "$add_keys_now" == "y" || "$add_keys_now" == "Y" ]]; then
+    if ask_yn "Do you want to edit your API keys for '$TARGET_USER' now? [y/N]: " "n"; then
         PS3="Please choose how to add your keys: "
         options=("Enter keys one-by-one" "Edit file manually with nano" "Skip")
         select opt in "${options[@]}"; do
@@ -1268,9 +1287,7 @@ NOUVEOF
         fi
 
         if [[ "$dl_failed" == true ]]; then
-            local retry_dl
-            read -p "Try another URL? [Y/n]: " retry_dl
-            if [[ "$retry_dl" == "n" || "$retry_dl" == "N" ]]; then
+            if ! ask_yn "Try another URL? [Y/n]: " "y"; then
                 echo "Skipping vGPU driver installation."
                 return 1
             fi
@@ -1379,9 +1396,7 @@ NOUVEOF
         fi
 
         if [[ "$tok_failed" == true ]] || [[ ! -f "$token_file_path" ]]; then
-            local retry_tok
-            read -p "Try another token URL? [Y/n]: " retry_tok
-            if [[ "$retry_tok" == "n" || "$retry_tok" == "N" ]]; then
+            if ! ask_yn "Try another token URL? [Y/n]: " "y"; then
                 print_info "Skipping vGPU token installation."
                 break
             fi
@@ -2970,36 +2985,31 @@ configure_local_llm_components() {
 
     if [[ "$effective_backend_target" == "llama" ]]; then
         echo ""
-        read -p "Allow external connections to Llama.CPP (add --host 0.0.0.0)? [y/N]: " expose_llm_choice
-        if [[ "$expose_llm_choice" == "y" || "$expose_llm_choice" == "Y" ]]; then
+        if ask_yn "Allow external connections to Llama.CPP (add --host 0.0.0.0)? [y/N]: " "n"; then
             EXPOSE_LLM_ENGINE="y"
         fi
     elif [[ "$effective_backend_target" == "ollama" ]]; then
         echo ""
-        read -p "Allow external connections to Ollama (bind 0.0.0.0:11434)? [y/N]: " expose_llm_choice
-        if [[ "$expose_llm_choice" == "y" || "$expose_llm_choice" == "Y" ]]; then
+        if ask_yn "Allow external connections to Ollama (bind 0.0.0.0:11434)? [y/N]: " "n"; then
             EXPOSE_LLM_ENGINE="y"
         fi
     fi
 
     if [[ "$LLAMA_COMPONENT_ACTION" != "skip" ]]; then
         echo ""
-        read -p "Install llama.cpp as a system service? [y/N]: " llama_service_choice
-        if [[ "$llama_service_choice" == "y" || "$llama_service_choice" == "Y" ]]; then
+        if ask_yn "Install llama.cpp as a system service? [y/N]: " "n"; then
             INSTALL_LLAMA_SERVICE="y"
         fi
 
         echo ""
-        read -p "Run llama.cpp benchmark after install? [y/N]: " llama_bench_choice
-        if [[ "$llama_bench_choice" == "y" || "$llama_bench_choice" == "Y" ]]; then
+        if ask_yn "Run llama.cpp benchmark after install? [y/N]: " "n"; then
             RUN_LLAMA_BENCH="y"
         fi
     fi
 
     if [[ "$LIBRECHAT_COMPONENT_ACTION" != "skip" ]]; then
         echo ""
-        read -p "Run LibreChat on port 8083 instead of 3080? [y/N]: " lc_port_choice
-        if [[ "$lc_port_choice" == "y" || "$lc_port_choice" == "Y" ]]; then
+        if ask_yn "Run LibreChat on port 8083 instead of 3080? [y/N]: " "n"; then
             LIBRECHAT_PORT="8083"
         fi
     fi
@@ -3018,8 +3028,7 @@ configure_local_llm_components() {
         configure_context_memory "${LLAMA_BUILD_VARIANT:-llama_cpu}"
     elif [[ "$LLAMA_COMPONENT_ACTION" != "skip" || "$OLLAMA_COMPONENT_ACTION" != "skip" ]]; then
         echo ""
-        read -p "Load a default model during this run? [y/N]: " load_model_choice
-        if [[ "$load_model_choice" == "y" || "$load_model_choice" == "Y" ]]; then
+        if ask_yn "Load a default model during this run? [y/N]: " "n"; then
             if [[ "$LLAMA_COMPONENT_ACTION" != "skip" ]]; then
                 configure_llm_model_prompt "${LLAMA_BUILD_VARIANT:-llama_cpu}"
                 configure_context_memory "${LLAMA_BUILD_VARIANT:-llama_cpu}"
@@ -3030,8 +3039,7 @@ configure_local_llm_components() {
     fi
 
     echo ""
-    read -p "Enable UFW automatically after this run if ports were opened? [y/N]: " ufw_choice
-    if [[ "$ufw_choice" == "y" || "$ufw_choice" == "Y" ]]; then
+    if ask_yn "Enable UFW automatically after this run if ports were opened? [y/N]: " "n"; then
         ENABLE_UFW_AUTOMATICALLY="y"
     fi
 
@@ -3046,8 +3054,7 @@ configure_openclaw_selection() {
 
     if [[ "$IS_DIFFERENT_USER" == false ]]; then
         echo -e "\n❌ [Blocked] OpenClaw cannot be installed for the current sudo user."
-        read -p "Do you want to create/select a dedicated standard user now? [y/N]: " fix_user
-        if [[ "$fix_user" == "y" || "$fix_user" == "Y" ]]; then
+        if ask_yn "Do you want to create/select a dedicated standard user now? [y/N]: " "n"; then
             echo ""
             determine_target_user
             detect_local_ai_components
@@ -4958,9 +4965,7 @@ main() {
     if [[ "$RESUME_MODE" == false && -f "$RESUME_STATE_FILE" ]]; then
         echo ""
         echo -e "\e[1;36m🔄 Detected a previous interrupted installation.\e[0m"
-        local _resume_choice
-        read -p "Resume where it left off? [Y/n]: " _resume_choice
-        if [[ "${_resume_choice:-Y}" == "Y" || "${_resume_choice:-Y}" == "y" ]]; then
+        if ask_yn "Resume where it left off? [Y/n]: " "y"; then
             RESUME_MODE=true
         else
             echo -e "Starting fresh — discarding previous state."
@@ -5430,8 +5435,7 @@ main() {
             echo -e "\n\e[1;31m⚠️  WARNING: Low Disk Space\e[0m"
             echo -e "You have selected options that require approximately \e[1;33m${required_gb}GB\e[0m of free space."
             echo -e "Your target partition ($TARGET_USER_HOME) only has \e[1;31m${free_space_gb}GB\e[0m available."
-            read -p "Do you want to proceed anyway? [y/N]: " proceed_space
-            if [[ "$proceed_space" != "y" && "$proceed_space" != "Y" ]]; then
+            if ! ask_yn "Do you want to proceed anyway? [y/N]: " "n"; then
                 echo -e "\n❌ Aborting installation to prevent disk exhaustion."
                 exit 1
             fi
@@ -5450,8 +5454,7 @@ main() {
                 echo -e "\n\e[1;31m⚠️  WARNING: Low System Memory\e[0m"
                 echo -e "You selected the Local LLM Stack, which generally requires at least \e[1;33m16GB\e[0m of RAM."
                 echo -e "Your system only has \e[1;31m${total_ram_gb}GB\e[0m of total memory."
-                read -p "Do you want to proceed anyway? Performance may be degraded. [y/N]: " proceed_ram
-                if [[ "$proceed_ram" != "y" && "$proceed_ram" != "Y" ]]; then
+                if ! ask_yn "Do you want to proceed anyway? Performance may be degraded. [y/N]: " "n"; then
                     echo -e "\n❌ Aborting installation to prevent system instability."
                     exit 1
                 fi
@@ -5510,9 +5513,7 @@ main() {
                         save_resume_state
                         echo -e "\e[1;36m  ✅ Progress saved. After reboot, just re-run this script — it will\e[0m"
                         echo -e "\e[1;36m     offer to continue automatically from where it left off.\e[0m"
-                        local _rbc
-                        read -p "Reboot now? [Y/n]: " _rbc
-                        if [[ "${_rbc:-Y}" == "Y" || "${_rbc:-Y}" == "y" ]]; then
+                        if ask_yn "Reboot now? [Y/n]: " "y"; then
                             print_info "Rebooting..."
                             sudo reboot
                             exit 0
@@ -5652,11 +5653,11 @@ main() {
             if [[ "$ENABLE_UFW_AUTOMATICALLY" == "y" ]]; then
                 print_info "Auto-enabling UFW firewall as selected in the configuration menu..."
                 enable_ufw="y"
-            else
-                read -p "Do you want to enable the UFW firewall now? (WARNING: Ensure SSH access is allowed if remote) [y/N]: " enable_ufw </dev/tty
+            elif ask_yn "Do you want to enable the UFW firewall now? (WARNING: Ensure SSH access is allowed if remote) [y/N]: " "n" </dev/tty; then
+                enable_ufw="y"
             fi
 
-            if [[ "$enable_ufw" == "y" || "$enable_ufw" == "Y" ]]; then
+            if [[ "$enable_ufw" == "y" ]]; then
                 sudo ufw default deny incoming &>/dev/null || true                                                    # ufw may not be installed
                 sudo ufw allow 22/tcp &>/dev/null || true                                                             # ufw may not be installed
                 if [[ "$INSTALL_LIBRECHAT" == "y" ]]; then sudo ufw allow $LIBRECHAT_PORT/tcp &>/dev/null || true; fi # ufw may not be installed
@@ -5710,8 +5711,7 @@ main() {
             done
             echo ""
         fi
-        read -p "Do you want to reboot now? [y/N]: " reboot_choice
-        if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
+        if ask_yn "Do you want to reboot now? [y/N]: " "n"; then
             if [[ $_pending_after_reboot -eq 1 ]]; then
                 save_resume_state
                 echo -e "\e[1;32m✅ Progress saved. After reboot, re-run this script — it will offer to\e[0m"
