@@ -140,8 +140,8 @@ chmod +x ubuntu-prep-setup.sh
 
 ### API Keys
 
-The script will create a `~/.env.secrets` file to store your API keys securely. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.bashrc` and `.zshrc` but is ignored by Git to prevent accidental exposure.
- Focus right now is on getting up an running easily on a trusted LAN, not security. Install it on a VPS on your own risk.
+The script will create a `~/.env.secrets` file to store your API keys, locked to owner-only access (chmod 600) so no other user on the system can read them. You will be prompted to add your keys either one-by-one or by editing the file directly with `nano`. This file is automatically sourced by your `.bashrc` and `.zshrc` but is ignored by Git to prevent accidental exposure.
+Focus right now is on getting up an running easily on a trusted LAN, not security. Install it on a VPS on your own risk.
 
 nano ~/.env.secrets
 
