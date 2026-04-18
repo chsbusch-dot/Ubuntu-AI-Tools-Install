@@ -312,4 +312,4 @@ The repository includes a comprehensive test suite in `test.sh` to validate the 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 ##
-Last updated: 2026-04-17 — Full stack validated: CUDA 13 + cuDNN 9.21.0 + llama.cpp + OpenWebUI + LibreChat + OpenClaw on Ubuntu 24.04 with NVIDIA RTXA5000-24Q passthrough.
+Last updated: 2026-04-17 — Full stack validated: CUDA 13 + cuDNN 9.21.0 + llama.cpp + OpenWebUI + LibreChat + OpenClaw on Ubuntu 24.04 with NVIDIA RTXA5000-24Q passthrough using NVIDIA Consumer Ubuntu Drivers, and on ESXi 8.0 VM with Ubuntu 24.04 with NVIDIA RTXA5000-24Q vGPU Drivers and licence token.
