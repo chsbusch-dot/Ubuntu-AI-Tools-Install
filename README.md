@@ -14,6 +14,14 @@ Once LLama.CPP is installed you can use the script to quickly reconfigure its pa
 
 I know it's a big script. I wanted a single command, I can paste anywhere with zero dependencies, that's why I didnt use ansible or a modular script. :) 
 
+## Quick Start
+
+To run the script, you can use the following one-liner command. It will download the script from your GitHub repository and execute it directly.
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/chsbusch-dot/ubuntu-prep/main/ubuntu-prep-setup.sh)"
+```
+
 ## Interactive Menus
 
 The script features intuitive, keyboard-driven menus to easily customize your installation without needing to edit configuration files.
@@ -109,13 +117,6 @@ The script dynamically detects your system resources. For example:
 - A fresh installation of Ubuntu LTS Server (tested on 22.04 and later).
 - Internet connection.
 
-## Quick Start
-
-To run the script, you can use the following one-liner command. It will download the script from your GitHub repository and execute it directly.
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/chsbusch-dot/ubuntu-prep/main/ubuntu-prep-setup.sh)"
-```
 
 ## Manual Installation
 
