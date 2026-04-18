@@ -37,21 +37,23 @@ jobs:
             exit 0
           fi
 
+          BODY="The daily OpenClaw compatibility check failed."
+          BODY+=$'\n\n'
+          BODY+="This means the \`openclaw\` npm package or installer may have changed "
+          BODY+="in a way that breaks our direct \`npm install -g openclaw\` approach "
+          BODY+="in \`ubuntu-prep-setup.sh\`."
+          BODY+=$'\n\n'
+          BODY+="**Action needed:** Review the [workflow run](${RUN_URL}) and update \`install_openclaw()\` if necessary."
+          BODY+=$'\n\n'
+          BODY+="Common changes to watch for:"$'\n'
+          BODY+="- \`bin\` field in package.json renamed (binary no longer called \`openclaw\`)"$'\n'
+          BODY+="- \`onboard\` subcommand renamed or removed"$'\n'
+          BODY+="- Install method changed from npm to something else"$'\n'
+          BODY+="- Package moved to a different npm scope (e.g. \`@openclaw/cli\`)"$'\n'
+          BODY+="- \`@beta\` tag removed or renamed"
+
           gh issue create \
             --repo "$GH_REPO" \
             --title "⚠️ OpenClaw compatibility check failed" \
             --label "openclaw-compat" \
-            --body "The daily OpenClaw compatibility check failed.
-
-This means the \`openclaw\` npm package or installer may have changed
-in a way that breaks our direct \`npm install -g openclaw\` approach
-in \`ubuntu-prep-setup.sh\`.
-
-**Action needed:** Review the [workflow run](${RUN_URL}) and update \`install_openclaw()\` if necessary.
-
-Common changes to watch for:
-- \`bin\` field in package.json renamed (binary no longer called \`openclaw\`)
-- \`onboard\` subcommand renamed or removed
-- Install method changed from npm to something else
-- Package moved to a different npm scope (e.g. \`@openclaw/cli\`)
-- \`@beta\` tag removed or renamed"
+            --body "$BODY"

@@ -77,29 +77,32 @@ jobs:
 
           if [[ "$PARSE_FAILED" == "true" ]]; then
             TITLE="⚠️ NVIDIA driver page structure changed — version check failed"
-            BODY="The daily NVIDIA driver version check could not parse the version from [nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/).
-
-The page structure may have changed. Update the grep pattern in \`.github/workflows/check-nvidia-driver.yml\`.
-
-**Action needed:** Check the page manually and update \`PINNED_VERSION\` in the workflow and \`_drv_url\` in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`.
-
-[Workflow run](${RUN_URL})"
+            BODY="The daily NVIDIA driver version check could not parse the version from "
+            BODY+="[nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/)."
+            BODY+=$'\n\n'
+            BODY+="The page structure may have changed. "
+            BODY+="Update the grep pattern in \`.github/workflows/check-nvidia-driver.yml\`."
+            BODY+=$'\n\n'
+            BODY+="**Action needed:** Check the page manually and update \`PINNED_VERSION\` in the workflow "
+            BODY+="and \`_drv_url\` in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`."
+            BODY+=$'\n\n'
+            BODY+="[Workflow run](${RUN_URL})"
           else
             TITLE="⚠️ NVIDIA driver update available: ${LATEST} (pinned: ${PINNED_VERSION})"
-            BODY="A newer NVIDIA production Linux driver is available.
-
-| | Version |
-|---|---|
-| **Pinned in script** | \`${PINNED_VERSION}\` |
-| **Latest on nvidia.com** | \`${LATEST}\` |
-
-**Action needed:**
-1. Get the full download URL from [nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/)
-2. Verify the new version works (check release notes for regressions on passthrough/vGPU)
-3. Update \`PINNED_VERSION\` in \`.github/workflows/check-nvidia-driver.yml\`
-4. Update the fallback URL in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`
-
-[Workflow run](${RUN_URL})"
+            BODY="A newer NVIDIA production Linux driver is available."
+            BODY+=$'\n\n'
+            BODY+="| | Version |"$'\n'
+            BODY+="|---|---|"$'\n'
+            BODY+="| **Pinned in script** | \`${PINNED_VERSION}\` |"$'\n'
+            BODY+="| **Latest on nvidia.com** | \`${LATEST}\` |"
+            BODY+=$'\n\n'
+            BODY+="**Action needed:**"$'\n'
+            BODY+="1. Get the full download URL from [nvidia.com/en-us/drivers/unix/](https://www.nvidia.com/en-us/drivers/unix/)"$'\n'
+            BODY+="2. Verify the new version works (check release notes for regressions on passthrough/vGPU)"$'\n'
+            BODY+="3. Update \`PINNED_VERSION\` in \`.github/workflows/check-nvidia-driver.yml\`"$'\n'
+            BODY+="4. Update the fallback URL in \`install_nvidia_driver()\` in \`ubuntu-prep-setup.sh\`"
+            BODY+=$'\n\n'
+            BODY+="[Workflow run](${RUN_URL})"
           fi
 
           gh issue create \
