@@ -112,6 +112,12 @@ LLAMA_FIT_CTX="" # --fit-ctx N: minimum ctx --fit will not shrink below
 LLAMA_MLOCK="n"  # --mlock: pin model in RAM to prevent idle-freeze swapping
 LLAMA_DIO="n"    # -dio: direct I/O, prevents RPC tensor upload hangs
 
+# ─── Local mirror mode ───────────────────────────────────────────────────────
+# When --local-mirror BASE_URL is passed, git clone uses the local bare mirror
+# instead of GitHub. Only llama.cpp and LibreChat are affected.
+# Example: --local-mirror chris@192.168.1.135:/home/chris
+LOCAL_MIRROR_BASE=""
+
 # ─── Headless Mode ────────────────────────────────────────────────
 # Run non-interactively with sensible defaults.
 #
@@ -124,33 +130,49 @@ show_usage() {
 Usage: ubuntu-prep-setup.sh [OPTIONS]
 
 OPTIONS
-  --dry-run, -n   Show what would be installed for your selections and exit.
-                  Safe: makes no changes, requires no sudo.
-  --resume        Resume after reboot checkpoint (NVIDIA driver install).
-  --help, -h      Show this help and exit.
+  --dry-run, -n            Show what would be installed and exit. No changes made.
+  --local-mirror BASE_URL  Clone llama.cpp and LibreChat from a local bare mirror
+                           instead of GitHub. BASE_URL is a git-clonable path prefix.
+                           Example: --local-mirror chris@192.168.1.135:/home/chris
+  --resume                 Resume after reboot checkpoint (NVIDIA driver install).
+  --help, -h               Show this help and exit.
 
 EXAMPLES
-  ubuntu-prep-setup.sh           # Interactive install (normal usage)
-  ubuntu-prep-setup.sh --dry-run # Preview the plan — no changes made
+  ubuntu-prep-setup.sh                                           # Interactive install
+  ubuntu-prep-setup.sh --dry-run                                 # Preview — no changes
+  ubuntu-prep-setup.sh --local-mirror chris@192.168.1.135:/home/chris  # Use LAN mirror
 
 For configuration details, see README.md or
 https://github.com/chsbusch-dot/Ubuntu-AI-Tools-Install
 USAGE
 }
-for arg in "$@"; do
-    case "$arg" in
-        --headless) HEADLESS_MODE=true ;;
-        --resume) RESUME_MODE=true ;;
-        --dry-run | -n) DRY_RUN=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --headless) HEADLESS_MODE=true; shift ;;
+        --resume) RESUME_MODE=true; shift ;;
+        --dry-run | -n) DRY_RUN=true; shift ;;
+        --local-mirror)
+            if [[ -n "${2:-}" && "${2:-}" != --* ]]; then
+                LOCAL_MIRROR_BASE="$2"; shift 2
+            else
+                echo "Error: --local-mirror requires a BASE_URL argument." >&2
+                echo "Example: --local-mirror chris@192.168.1.135:/home/chris" >&2
+                exit 2
+            fi
+            ;;
+        --local-mirror=*)
+            LOCAL_MIRROR_BASE="${1#--local-mirror=}"; shift
+            ;;
         --help | -h)
             show_usage
             exit 0
             ;;
         -*)
-            echo "Unknown option: $arg" >&2
+            echo "Unknown option: $1" >&2
             show_usage >&2
             exit 2
             ;;
+        *) shift ;;
     esac
 done
 
@@ -3313,6 +3335,12 @@ install_local_llm() {
             print_info "Cloning and building llama.cpp with CPU support..."
         fi
 
+        local _llama_clone_url="https://github.com/ggml-org/llama.cpp"
+        if [[ -n "$LOCAL_MIRROR_BASE" ]]; then
+            _llama_clone_url="${LOCAL_MIRROR_BASE}/llama.cpp.git"
+            print_info "Local mirror mode — cloning llama.cpp from ${_llama_clone_url}"
+        fi
+
         sudo -u "$TARGET_USER" bash -c "
             cd \"$TARGET_USER_HOME\"
             # If the directory exists but isn't a git repo (due to the previous mkdir bug), remove it
@@ -3320,7 +3348,7 @@ install_local_llm() {
                 rm -rf llama.cpp
             fi
             if [ ! -d \"llama.cpp\" ]; then
-                git clone https://github.com/ggerganov/llama.cpp
+                git clone \"$_llama_clone_url\"
             fi
             mkdir -p \"$(get_llama_cache_path)\"
             cd llama.cpp
@@ -3659,7 +3687,12 @@ SERVICEEOF
         sudo systemctl is-enabled docker &>/dev/null || sudo systemctl enable --now docker
 
         print_info "Cloning LibreChat repository..."
-        sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && git clone https://github.com/danny-avila/LibreChat.git"
+        local _librechat_clone_url="https://github.com/danny-avila/LibreChat.git"
+        if [[ -n "$LOCAL_MIRROR_BASE" ]]; then
+            _librechat_clone_url="${LOCAL_MIRROR_BASE}/LibreChat.git"
+            print_info "Local mirror mode — cloning LibreChat from ${_librechat_clone_url}"
+        fi
+        sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME\" && git clone \"$_librechat_clone_url\""
 
         print_info "Configuring LibreChat environment..."
         sudo -u "$TARGET_USER" bash -c "cd \"$TARGET_USER_HOME/LibreChat\" && cp .env.example .env"
@@ -5252,6 +5285,7 @@ main() {
         OPENCLAW_RELEASE_CHANNEL="${RESUME_OPENCLAW_RELEASE_CHANNEL:-latest}"
         EXPOSE_OPENCLAW="${RESUME_EXPOSE_OPENCLAW:-n}"
         OPENCLAW_PORT="${RESUME_OPENCLAW_PORT:-18789}"
+        LOCAL_MIRROR_BASE="${RESUME_LOCAL_MIRROR_BASE:-}"
 
         echo -e "  Restored selections: [${MASTER_SELECTIONS[*]}]"
         echo -e "  Already completed:   [${MASTER_INSTALLED_STATE[*]}]"
@@ -6017,6 +6051,7 @@ RESUME_OLLAMA_PULL_MODEL="${OLLAMA_PULL_MODEL:-}"
 RESUME_OPENCLAW_RELEASE_CHANNEL="${OPENCLAW_RELEASE_CHANNEL:-latest}"
 RESUME_EXPOSE_OPENCLAW="${EXPOSE_OPENCLAW:-n}"
 RESUME_OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+RESUME_LOCAL_MIRROR_BASE="${LOCAL_MIRROR_BASE:-}"
 
 EOF
     sudo chmod 600 "$RESUME_STATE_FILE"
