@@ -133,6 +133,26 @@ chmod +x ubuntu-prep-setup.sh
 ./ubuntu-prep-setup.sh
 ```
 
+## Command-line Options
+
+```
+--dry-run, -n   Show what would be installed for your selections and exit.
+                Safe: makes no changes, requires no sudo.
+--headless      Run non-interactively with sensible defaults.
+--resume        Resume after the post-NVIDIA-driver reboot (usually automatic).
+--help, -h      Show help and exit.
+```
+
+### Preview before running (`--dry-run`)
+
+Run the script with `--dry-run` to see exactly what would be installed for your current selections — no changes made, no sudo required:
+
+```bash
+./ubuntu-prep-setup.sh --dry-run
+```
+
+You'll walk through the interactive menu as usual, but instead of installing anything the script prints a per-component plan (apt packages, download URLs, service changes) and exits. Re-run without `--dry-run` to actually install.
+
 ## Configuration
 
 ### API Keys

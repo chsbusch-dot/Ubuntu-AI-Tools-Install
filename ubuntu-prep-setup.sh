@@ -116,10 +116,41 @@ LLAMA_FIT_CTX="" # --fit-ctx N: minimum ctx --fit will not shrink below
 # Usage:
 #   bash ubuntu-prep-setup.sh --headless
 HEADLESS_MODE=false
+DRY_RUN=false
+show_usage() {
+    cat <<'USAGE'
+Usage: ubuntu-prep-setup.sh [OPTIONS]
+
+OPTIONS
+  --dry-run, -n   Show what would be installed for your selections and exit.
+                  Safe: makes no changes, requires no sudo.
+  --headless      Run non-interactively with sensible defaults.
+  --resume        Resume after reboot checkpoint (NVIDIA driver install).
+  --help, -h      Show this help and exit.
+
+EXAMPLES
+  ubuntu-prep-setup.sh                # Interactive install (normal usage)
+  ubuntu-prep-setup.sh --dry-run      # Preview the plan — no changes made
+  ubuntu-prep-setup.sh --headless     # Non-interactive install with defaults
+
+For configuration details, see README.md or
+https://github.com/chsbusch-dot/Ubuntu-AI-Tools-Install
+USAGE
+}
 for arg in "$@"; do
     case "$arg" in
         --headless) HEADLESS_MODE=true ;;
         --resume) RESUME_MODE=true ;;
+        --dry-run | -n) DRY_RUN=true ;;
+        --help | -h)
+            show_usage
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $arg" >&2
+            show_usage >&2
+            exit 2
+            ;;
     esac
 done
 
@@ -5050,10 +5081,75 @@ show_menu() {
     echo "---------------------------------"
 }
 
+dry_run_plan_for() {
+    case "$1" in
+        0)  echo "apt-get update && apt-get full-upgrade -y" ;;
+        1)  echo "apt install zsh git tmux micro curl; install Oh My Zsh; chsh to zsh for $TARGET_USER" ;;
+        2)  echo "apt install python3 python3-pip python3-venv python3-full" ;;
+        3)  echo "Add Docker apt repo; install docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin; add $TARGET_USER to docker group" ;;
+        4)  echo "Install NVM (curl script) + Node LTS + npm for $TARGET_USER" ;;
+        5)  echo "Install Homebrew to /home/linuxbrew/.linuxbrew (requires Node first)" ;;
+        6)  echo "npm install -g @google/gemini-cli (requires NVM/Node)" ;;
+        7)  echo "Download pinned NVIDIA driver .run installer; disable nouveau; run installer; reboot" ;;
+        8)  echo "snap install btop (or apt install btop as fallback)" ;;
+        9)  echo "apt install nvtop" ;;
+        10) echo "Add NVIDIA CUDA apt repo; install cuda-toolkit-13; write /etc/profile.d/cuda.sh" ;;
+        11) echo "apt install gcc (needed by CUDA)" ;;
+        12) echo "Add NVIDIA container toolkit apt repo; install nvidia-container-toolkit; configure Docker runtime" ;;
+        13) echo "Download cuDNN 9.21.0 local .deb installer; apt install cudnn9-cuda-13; write /etc/profile.d/cudnn.sh" ;;
+        14) echo "Install Ollama (curl script) and/or llama.cpp (build from source with CUDA); optionally run Open-WebUI / LibreChat via Docker Compose; create systemd services" ;;
+        15) echo "npm install -g openclaw@beta; run 'openclaw onboard'; install openclaw-gateway systemd service; patch config to route to llama.cpp" ;;
+        *)  echo "(no plan available for index $1)" ;;
+    esac
+}
+
+print_dry_run_plan() {
+    local count=$1
+    shift
+    local labels=("$@")
+
+    echo ""
+    echo -e "\e[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
+    echo -e "\e[1;36m  DRY RUN — no changes have been or will be made.\e[0m"
+    echo -e "\e[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
+    echo ""
+    echo -e "Target user:  \e[1;33m${TARGET_USER:-<unknown>}\e[0m"
+    echo -e "GPU detected: \e[1;33m${GPU_STATUS:-none}\e[0m"
+    echo ""
+    echo "Selected items (install order):"
+    echo ""
+
+    local i any=0
+    for i in "${!MASTER_SELECTIONS[@]}"; do
+        if [[ ${MASTER_SELECTIONS[$i]:-0} -eq 1 ]]; then
+            any=1
+            echo -e "  \e[1;32m[$i]\e[0m ${labels[$i]}"
+            printf '       → %s\n' "$(dry_run_plan_for "$i")"
+        fi
+    done
+    if [[ $any -eq 0 ]]; then
+        echo "  (nothing selected)"
+    fi
+
+    echo ""
+    echo "A real run would also:"
+    echo "  • Prompt for API keys and write them to \$HOME/.env.secrets (chmod 600)"
+    echo "  • Install base dependencies via apt (curl, wget, jq, build-essential)"
+    echo "  • Configure the system timezone (via timedatectl)"
+    if [[ "${MASTER_SELECTIONS[7]:-0}" -eq 1 ]]; then
+        echo "  • Reboot after the NVIDIA driver install, then auto-resume"
+    fi
+    echo ""
+    echo -e "\e[1;36mTo actually install, re-run without --dry-run.\e[0m"
+    echo ""
+}
+
 main() {
     check_not_root
-    check_sudo_privileges
-    start_sudo_keepalive
+    if [[ "$DRY_RUN" != "true" ]]; then
+        check_sudo_privileges
+        start_sudo_keepalive
+    fi
     check_os
 
     # ── Detect an interrupted installation from a previous run ───────────────
@@ -5120,7 +5216,9 @@ main() {
 
         clear
         print_status_header
-        configure_timezone
+        if [[ "$DRY_RUN" != "true" ]]; then
+            configure_timezone
+        fi
     fi
 
     local MASTER_OPTIONS=(
@@ -5559,6 +5657,13 @@ main() {
             fi
         fi
     fi # end: if [[ "$RESUME_MODE" == false ]]
+
+    # Dry-run: show the plan for the current selections and exit before any
+    # mutating work (setup_env_secrets writes to $HOME, installers touch the system).
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_dry_run_plan "$MENU_ITEM_COUNT" "${MASTER_OPTIONS[@]}"
+        exit 0
+    fi
 
     # Configure API keys after menu selection, before installation tasks begin.
     # Skipped on resume — keys were already configured in the original run.
