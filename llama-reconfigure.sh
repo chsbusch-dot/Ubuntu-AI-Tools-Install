@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.2.0"
+LLAMA_RECONFIGURE_VERSION="1.3.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -105,6 +105,7 @@ ensure_root() {
 #   P_MLOCK         y/n
 #   P_FIT           on / off
 #   P_FIT_CTX       65536
+#   P_N_CPU_MOE     integer (MoE expert layers on CPU; empty = unset)
 #
 parse_unit_file() {
     local exec_line
@@ -161,6 +162,7 @@ parse_unit_file() {
     [[ "$P_ARG_STRING" == *"--mlock"* ]] && P_MLOCK="y" || P_MLOCK="n"
     P_FIT=$(grep -oE -- '--fit (on|off)' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_FIT_CTX=$(grep -oE -- '--fit-ctx [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_N_CPU_MOE=$(grep -oE -- '--n-cpu-moe [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -192,6 +194,7 @@ serialize_arg_string() {
     [[ -n "$P_CACHE_V" ]] && out+=" -ctv $P_CACHE_V"
     [[ "$P_FLASH" == "on" ]] && out+=" --flash-attn on"
     [[ "$P_MLOCK" == "y" ]]  && out+=" --mlock"
+    [[ -n "$P_N_CPU_MOE" ]] && out+=" --n-cpu-moe $P_N_CPU_MOE"
 
     printf '%s' "$out"
 }
@@ -223,6 +226,7 @@ show_current() {
     printf '  Listen       : %s:%s\n' "${P_HOST:-127.0.0.1}" "${P_PORT:-8080}"
     printf '  mlock        : %s\n' "$P_MLOCK"
     [[ "$P_IS_CUDA" == "y" ]] && printf '  --fit        : %s  (--fit-ctx %s)\n' "${P_FIT:-off}" "${P_FIT_CTX:-unset}"
+    [[ -n "$P_N_CPU_MOE" ]] && printf '  CPU MoE layers: %s\n' "$P_N_CPU_MOE"
     printf '  Service      : %s\n' "$(systemctl is-active llama-server 2>/dev/null || echo 'inactive')"
     printf '\n'
 }
@@ -293,6 +297,22 @@ edit_fit() {
         "")  return 0 ;;
         *)   warn "Expected on/off." ;;
     esac
+}
+
+edit_n_cpu_moe() {
+    local v
+    echo "MoE expert layers to run on CPU (0 = all on GPU, unset = llama.cpp default)."
+    echo "Useful for large MoE models (Mixtral, DeepSeek-MoE) when VRAM is tight."
+    read -rp "  --n-cpu-moe (current: ${P_N_CPU_MOE:-(unset)}) [number or blank to clear]: " v
+    if [[ -z "$v" ]]; then
+        P_N_CPU_MOE=""
+        ok "--n-cpu-moe cleared"
+    elif [[ "$v" =~ ^[0-9]+$ ]]; then
+        P_N_CPU_MOE="$v"
+        ok "--n-cpu-moe → $v"
+    else
+        warn "Not a non-negative integer."
+    fi
 }
 
 # ─── HuggingFace Hub API ───────────────────────────────────────────────
@@ -628,21 +648,22 @@ main_menu() {
         cat <<MENU
   1) Model          2) Context        3) GPU layers      4) KV cache
   5) Flash-attn     6) Listen addr    7) mlock           8) --fit
-  9) Raw editor
+  9) CPU MoE layers  0) Raw editor
   a) Apply and restart     d) Dry-run preview
   r) Rollback to .bak      q) Quit
 MENU
         local choice; read -rp "> " choice
         case "$choice" in
-            1) edit_model   ;;
-            2) edit_context ;;
-            3) edit_ngl     ;;
-            4) edit_cache   ;;
-            5) edit_flash   ;;
-            6) edit_listen  ;;
-            7) edit_mlock   ;;
-            8) edit_fit     ;;
-            9) edit_raw     ;;
+            1) edit_model      ;;
+            2) edit_context    ;;
+            3) edit_ngl        ;;
+            4) edit_cache      ;;
+            5) edit_flash      ;;
+            6) edit_listen     ;;
+            7) edit_mlock      ;;
+            8) edit_fit        ;;
+            9) edit_n_cpu_moe  ;;
+            0) edit_raw        ;;
             a|A) apply_changes && return 0 ;;
             d|D) apply_changes dry ;;
             r|R) rollback_unit && return 0 ;;
@@ -683,8 +704,9 @@ main() {
         --cache)      edit_cache;   apply_changes ;;
         --flash)      edit_flash;   apply_changes ;;
         --listen)     edit_listen;  apply_changes ;;
-        --mlock)      edit_mlock;   apply_changes ;;
-        --fit)        edit_fit;     apply_changes ;;
+        --mlock)      edit_mlock;      apply_changes ;;
+        --fit)        edit_fit;        apply_changes ;;
+        --n-cpu-moe)  edit_n_cpu_moe; apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         *)
             warn "Unknown option: $1"

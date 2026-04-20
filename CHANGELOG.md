@@ -7,6 +7,13 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 ## [Unreleased]
 
 ### Added
+- **`llama-reconfigure`: `--n-cpu-moe` support.**
+  New menu option 9 (CPU MoE layers) and `--n-cpu-moe` flag jump let users
+  set `--n-cpu-moe N` — the number of Mixture-of-Experts expert layers to
+  evaluate on CPU instead of GPU. Useful for large MoE models (Mixtral,
+  DeepSeek-MoE, Qwen-MoE) when VRAM is tight. Parsed from and serialized
+  to the systemd ExecStart like all other flags; blank input clears the
+  flag entirely. 5 new bats tests (total: 251).
 - **`llama-reconfigure` model editor: HuggingFace search.**
   The model editor now offers three paths: (1) search the Hub by
   keyword → ranked list of GGUF repos by download count → pick repo

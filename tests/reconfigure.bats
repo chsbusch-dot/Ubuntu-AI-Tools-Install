@@ -128,7 +128,7 @@ EOF
     P_MODEL_MODE="hf"; P_HF_REPO="org/repo"; P_HF_FILE="m.gguf"
     P_PORT="8080"; P_IS_CUDA="n"
     P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""
-    P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""
+    P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""
     result=$(serialize_arg_string)
     [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080" ]
 }
@@ -137,7 +137,7 @@ EOF
     P_MODEL_MODE="hf"; P_HF_REPO="org/repo"; P_HF_FILE="m.gguf"
     P_PORT="8080"; P_IS_CUDA="y"; P_NGL="99"; P_HOST="0.0.0.0"
     P_CTX="32768"; P_CACHE_K="q8_0"; P_CACHE_V="q8_0"
-    P_FLASH="on"; P_MLOCK="y"; P_FIT=""; P_FIT_CTX=""
+    P_FLASH="on"; P_MLOCK="y"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""
     result=$(serialize_arg_string)
     [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080 -ngl 99 --host 0.0.0.0 -c 32768 -ctk q8_0 -ctv q8_0 --flash-attn on --mlock" ]
 }
@@ -145,7 +145,7 @@ EOF
 @test "serialize: --fit on suppresses -ngl (they are mutually exclusive)" {
     P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"
     P_PORT="8080"; P_NGL="50"; P_FIT="on"; P_FIT_CTX="65536"
-    P_CTX=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""; P_MLOCK="n"
+    P_CTX=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""; P_MLOCK="n"; P_N_CPU_MOE=""
     result=$(serialize_arg_string)
     [[ "$result" == *"--fit on --fit-ctx 65536"* ]]
     [[ "$result" != *"-ngl 50"* ]]
@@ -154,7 +154,7 @@ EOF
 @test "serialize: local model uses --model not --hf-repo" {
     P_MODEL_MODE="local"; P_MODEL_PATH="/m/path.gguf"; P_PORT="8080"
     P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""
-    P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""
+    P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""
     P_HF_REPO=""; P_HF_FILE=""
     result=$(serialize_arg_string)
     [ "$result" = "--model /m/path.gguf --port 8080" ]
@@ -163,7 +163,7 @@ EOF
 @test "serialize: --fit-ctx defaults to 65536 if unset" {
     P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"
     P_PORT="8080"; P_FIT="on"; P_FIT_CTX=""
-    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""; P_MLOCK="n"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""; P_MLOCK="n"; P_N_CPU_MOE=""
     result=$(serialize_arg_string)
     [[ "$result" == *"--fit-ctx 65536"* ]]
 }
@@ -192,6 +192,49 @@ EOF
     [ "$P_NGL"   = "$saved_ngl"   ]
     [ "$P_HOST"  = "$saved_host"  ]
     [ "$P_MLOCK" = "$saved_mlock" ]
+}
+
+# ─── --n-cpu-moe parser / serializer ──────────────────────────────────
+
+@test "parse: --n-cpu-moe is extracted from ExecStart" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --n-cpu-moe 8 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_N_CPU_MOE" = "8" ]
+}
+
+@test "parse: --n-cpu-moe absent → P_N_CPU_MOE empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_N_CPU_MOE" ]
+}
+
+@test "serialize: --n-cpu-moe included when set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"
+    P_PORT="8080"; P_IS_CUDA="y"; P_NGL="99"; P_HOST=""
+    P_CTX=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""
+    P_N_CPU_MOE="8"
+    result=$(serialize_arg_string)
+    [[ "$result" == *"--n-cpu-moe 8"* ]]
+}
+
+@test "serialize: --n-cpu-moe omitted when empty" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"
+    P_PORT="8080"; P_IS_CUDA="n"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""
+    P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""
+    P_N_CPU_MOE=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--n-cpu-moe"* ]]
+}
+
+@test "serialize: --n-cpu-moe appears after --mlock" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"
+    P_PORT="8080"; P_MLOCK="y"; P_N_CPU_MOE="4"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""; P_FIT=""; P_FIT_CTX=""
+    result=$(serialize_arg_string)
+    mlock_pos=$(echo "$result" | grep -bo '\-\-mlock' | head -1 | cut -d: -f1)
+    moe_pos=$(echo "$result" | grep -bo '\-\-n-cpu-moe' | head -1 | cut -d: -f1)
+    [ "$moe_pos" -gt "$mlock_pos" ]
 }
 
 # ─── Validator ─────────────────────────────────────────────────────────
