@@ -29,6 +29,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Ensure the label exists (idempotent)
+          gh label create openclaw-compat \
+            --repo "$GH_REPO" \
+            --color "fbca04" \
+            --description "OpenClaw install/compatibility regressions" \
+            2>/dev/null || true
+
           # Skip if an open openclaw-compat issue already exists
           OPEN=$(gh issue list --repo "$GH_REPO" \
                    --label openclaw-compat --state open --json number --jq 'length')

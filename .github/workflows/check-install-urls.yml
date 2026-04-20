@@ -34,6 +34,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Ensure the label exists (idempotent)
+          gh label create install-urls \
+            --repo "$GH_REPO" \
+            --color "d73a4a" \
+            --description "Install-URL reachability failures" \
+            2>/dev/null || true
+
           # Skip if an open install-urls issue already exists
           OPEN=$(gh issue list --repo "$GH_REPO" \
                    --label install-urls --state open --json number --jq 'length')

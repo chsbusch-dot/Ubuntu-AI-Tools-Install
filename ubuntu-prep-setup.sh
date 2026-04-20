@@ -6,8 +6,8 @@
 # system updates, developer tools, and specific software stacks.
 #
 # Reference: https://discourse.ubuntu.com/t/my-powerful-zsh-profile/47395
-#
-# 4/6/2026 Release 1.0 - Initial version with core functionality.
+
+UBUNTU_PREP_VERSION="1.0.1"
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -142,6 +142,7 @@ OPTIONS
                            control the mirror host and the network path to it. The
                            mirror can serve arbitrary model weights and repo contents.
   --resume                 Resume after reboot checkpoint (NVIDIA driver install).
+  --version, -V            Print version and exit.
   --help, -h               Show this help and exit.
 
 EXAMPLES
@@ -183,6 +184,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --help | -h)
             show_usage
+            exit 0
+            ;;
+        --version | -V)
+            echo "ubuntu-prep-setup.sh ${UBUNTU_PREP_VERSION}"
             exit 0
             ;;
         -*)

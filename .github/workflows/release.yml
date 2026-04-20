@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install shellcheck + bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck bats
+
+      - name: Shellcheck
+        run: shellcheck --severity=warning ubuntu-prep-setup.sh
+
+      - name: Bash syntax
+        run: bash -n ubuntu-prep-setup.sh
+
+      - name: Bats test suite
+        run: bats tests/
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify script version matches tag
+        env:
+          TAG_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          SCRIPT_VERSION=$(grep -oP 'UBUNTU_PREP_VERSION="\K[^"]+' ubuntu-prep-setup.sh | head -1)
+          if [ "$SCRIPT_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Tag v${TAG_VERSION} does not match UBUNTU_PREP_VERSION=\"${SCRIPT_VERSION}\""
+            echo "   Bump UBUNTU_PREP_VERSION in ubuntu-prep-setup.sh and re-tag."
+            exit 1
+          fi
+          echo "✅ Tag and script version match: ${TAG_VERSION}"
+
+      - name: Generate SHA256SUMS
+        run: |
+          sha256sum ubuntu-prep-setup.sh > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # Pull the section between "## [VERSION]" and the next "## [" header.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]"   { inside=1; next }
+            inside && /^## \[/         { exit }
+            inside                     { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "⚠️  No CHANGELOG entry found for ${VERSION} — using fallback."
+            printf 'Release %s\n\nSee [CHANGELOG.md](CHANGELOG.md).\n' "$VERSION" > RELEASE_NOTES.md
+          fi
+
+          echo "--- release notes preview ---"
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            ubuntu-prep-setup.sh SHA256SUMS

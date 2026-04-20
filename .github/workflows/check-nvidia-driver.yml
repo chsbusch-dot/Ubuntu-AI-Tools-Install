@@ -35,12 +35,19 @@ jobs:
             exit 0
           fi
 
-          # Extract the production branch version for Linux x86_64
-          # The page lists it as plain text adjacent to "Production Branch Version"
-          LATEST=$(echo "$PAGE" \
-            | grep -oP '(?<=Production Branch Version</td>).*?(\d+\.\d+[\d.]*)' \
-            | grep -oP '\d+\.\d+[\d.]*' \
-            | head -1 || true)
+          # Extract the production branch version for Linux x86_64.
+          # The page structure has changed over time, so try several patterns
+          # in order and take the first numeric match that looks like a driver version.
+          LATEST=""
+          for pattern in \
+            'Production Branch Version[^0-9]*\K[0-9]+\.[0-9]+(\.[0-9]+)?' \
+            'Latest Production Branch Version[^0-9]*\K[0-9]+\.[0-9]+(\.[0-9]+)?' \
+            'Linux x86_64[^0-9]{0,200}\K[0-9]{3}\.[0-9]{2,}(\.[0-9]+)?' \
+            'Latest Long Lived Branch Version[^0-9]*\K[0-9]+\.[0-9]+(\.[0-9]+)?'
+          do
+            LATEST=$(echo "$PAGE" | grep -oP "$pattern" | head -1 || true)
+            [[ -n "$LATEST" ]] && break
+          done
 
           if [[ -z "$LATEST" ]]; then
             echo "⚠️  Could not parse version from page — page structure may have changed."
@@ -68,6 +75,13 @@ jobs:
           LATEST: ${{ steps.check.outputs.latest }}
           PARSE_FAILED: ${{ steps.check.outputs.parse_failed }}
         run: |
+          # Ensure the label exists (idempotent — ignore "already exists" errors)
+          gh label create nvidia-driver \
+            --repo "$GH_REPO" \
+            --color "76b900" \
+            --description "Tracks NVIDIA driver version drift" \
+            2>/dev/null || true
+
           # Deduplicate — skip if an open nvidia-driver issue already exists
           OPEN=$(gh issue list --repo "$GH_REPO" \
                    --label nvidia-driver --state open --json number --jq 'length')
