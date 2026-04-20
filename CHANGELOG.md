@@ -6,6 +6,12 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-04-20
+
+Bundled scripts this release:
+- `ubuntu-prep-setup.sh` — `1.0.1` (unchanged since last release)
+- `llama-reconfigure.sh` — `1.1.0` (new this release)
+
 ### Added
 - **`llama-reconfigure.sh`** — standalone, menu-driven editor for an
   installed `llama-server.service`. Parses the existing `ExecStart`
@@ -22,6 +28,11 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
   has set up llama.cpp.
 - 15 new bats tests pinning the parser, serializer, round-trip, and
   the single-quote validator (total: 235).
+
+### Changed
+- Release workflow now accepts a tag that matches *any* bundled
+  script's version (was: strict match against `UBUNTU_PREP_VERSION`).
+  This lets us cut repo releases that bump only one script.
 
 ## [1.0.1] — 2026-04-19
 
