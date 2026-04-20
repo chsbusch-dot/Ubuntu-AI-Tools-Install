@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.1.0"
+LLAMA_RECONFIGURE_VERSION="1.2.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -295,24 +295,174 @@ edit_fit() {
     esac
 }
 
-edit_model() {
-    echo "Model can be an HF slug (org/repo[:file]) or a local .gguf path."
-    case "$P_MODEL_MODE" in
-        hf)    echo "  Current: ${P_HF_REPO}:${P_HF_FILE:-(default)}" ;;
-        local) echo "  Current: $P_MODEL_PATH" ;;
-    esac
-    local v; read -rp "New model [blank = keep]: " v
-    [[ -n "$v" ]] || return 0
+# ─── HuggingFace Hub API ───────────────────────────────────────────────
+#
+# Public API, no token required for ungated repos. HF_TOKEN is passed
+# through when set so gated repos (meta-llama, google/gemma) also work.
+#
+# Network-calling wrappers and JSON parsers are separated so the parsers
+# can be unit-tested with fixture JSON.
 
-    if [[ "$v" == /* ]]; then
-        [[ -r "$v" ]] || { warn "File not readable: $v"; return 0; }
-        P_MODEL_MODE="local"; P_MODEL_PATH="$v"; P_HF_REPO=""; P_HF_FILE=""
-    elif [[ "$v" == *":"* ]]; then
-        P_MODEL_MODE="hf"; P_HF_REPO="${v%%:*}"; P_HF_FILE="${v#*:}"; P_MODEL_PATH=""
-    else
-        P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""
+hf_api_curl() {
+    # Usage: hf_api_curl <url> [<extra-curl-args...>]
+    local url="$1"; shift || true
+    local -a auth=()
+    [[ -n "${HF_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${HF_TOKEN}")
+    curl -fsSL --max-time 15 "${auth[@]}" "$@" "$url"
+}
+
+hf_api_search() {
+    # Query the Hub for GGUF models, ranked by downloads. 20 results max.
+    local query="$1"
+    local q_enc; q_enc=$(printf '%s' "$query" | jq -sRr @uri)
+    hf_api_curl "https://huggingface.co/api/models?search=${q_enc}&filter=gguf&sort=downloads&direction=-1&limit=20"
+}
+
+hf_api_tree() {
+    # List files at the top level of a repo (main branch).
+    local repo="$1"
+    hf_api_curl "https://huggingface.co/api/models/${repo}/tree/main"
+}
+
+hf_parse_search_results() {
+    # Input: Hub /api/models JSON on stdin.
+    # Output (stdout): one result per line as "id\tdownloads\tlikes".
+    jq -r '.[] | "\(.id)\t\(.downloads // 0)\t\(.likes // 0)"'
+}
+
+hf_parse_tree_gguf() {
+    # Input: /api/models/<repo>/tree/main JSON on stdin.
+    # Output (stdout): one file per line as "path\tsize_bytes", .gguf only,
+    # sorted by size descending (largest = highest quality usually).
+    jq -r '.[] | select(.type == "file") | select(.path | endswith(".gguf")) | "\(.path)\t\(.size // 0)"' \
+        | sort -t $'\t' -k2 -nr
+}
+
+human_size() {
+    # Input: bytes (integer). Output: "12.3 GB" / "845 MB" / "512 KB".
+    local b="$1"
+    awk -v b="$b" 'BEGIN {
+        if (b >= 1073741824) { printf "%.1f GB", b / 1073741824 }
+        else if (b >= 1048576)    { printf "%.0f MB", b / 1048576 }
+        else if (b >= 1024)       { printf "%.0f KB", b / 1024 }
+        else                      { printf "%d B", b }
+    }'
+}
+
+require_jq() {
+    command -v jq >/dev/null 2>&1 || {
+        warn "jq is required for HF search. Install it: sudo apt install -y jq"
+        return 1
+    }
+}
+
+# Interactive search flow. Mutates P_HF_REPO / P_HF_FILE / P_MODEL_MODE.
+edit_model_search_flow() {
+    require_jq || return 1
+
+    local query
+    read -rp "Search HuggingFace for: " query
+    [[ -n "$query" ]] || { info "Cancelled."; return 0; }
+
+    info "Searching huggingface.co…"
+    local raw; raw=$(hf_api_search "$query" || true)
+    [[ -n "$raw" ]] || { warn "No response from HF API."; return 1; }
+
+    # Parse into parallel arrays
+    local -a ids=() downloads=() likes=()
+    while IFS=$'\t' read -r id dls lks; do
+        [[ -n "$id" ]] || continue
+        ids+=("$id"); downloads+=("$dls"); likes+=("$lks")
+    done < <(printf '%s' "$raw" | hf_parse_search_results)
+
+    if [[ "${#ids[@]}" -eq 0 ]]; then
+        warn "No GGUF repos matched \"$query\". Try different terms or use the direct-input option."
+        return 0
     fi
-    info "Model queued (download happens at Apply time if not cached)."
+
+    echo ""
+    local i
+    for i in "${!ids[@]}"; do
+        printf '  %2d) %-55s  ⬇ %s   ★ %s\n' \
+            "$((i+1))" "${ids[$i]}" "${downloads[$i]}" "${likes[$i]}"
+    done
+    echo ""
+    local pick
+    read -rp "Pick a repo [1-${#ids[@]}, blank = cancel]: " pick
+    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 0; }
+    (( pick >= 1 && pick <= ${#ids[@]} )) || { warn "Out of range."; return 0; }
+    local repo="${ids[$((pick-1))]}"
+
+    info "Listing files for ${repo}…"
+    local tree_raw; tree_raw=$(hf_api_tree "$repo" || true)
+    if [[ -z "$tree_raw" ]]; then
+        warn "Couldn't fetch file list. Repo may be gated — set HF_TOKEN in ~/.env.secrets."
+        return 1
+    fi
+
+    local -a files=() sizes=()
+    while IFS=$'\t' read -r path size; do
+        [[ -n "$path" ]] || continue
+        files+=("$path"); sizes+=("$size")
+    done < <(printf '%s' "$tree_raw" | hf_parse_tree_gguf)
+
+    if [[ "${#files[@]}" -eq 0 ]]; then
+        warn "No .gguf files in ${repo}. Pick a different repo."
+        return 0
+    fi
+
+    echo ""
+    for i in "${!files[@]}"; do
+        printf '  %2d) %-60s  %s\n' \
+            "$((i+1))" "${files[$i]}" "$(human_size "${sizes[$i]}")"
+    done
+    echo ""
+    read -rp "Pick a file [1-${#files[@]}, blank = cancel]: " pick
+    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 0; }
+    (( pick >= 1 && pick <= ${#files[@]} )) || { warn "Out of range."; return 0; }
+
+    P_MODEL_MODE="hf"
+    P_HF_REPO="$repo"
+    P_HF_FILE="${files[$((pick-1))]}"
+    P_MODEL_PATH=""
+    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} (download happens at Apply time if not cached)."
+}
+
+edit_model() {
+    case "$P_MODEL_MODE" in
+        hf)    echo "Current: HF ${P_HF_REPO}:${P_HF_FILE:-(default)}" ;;
+        local) echo "Current: local $P_MODEL_PATH" ;;
+        *)     echo "Current: (not detected)" ;;
+    esac
+    echo ""
+    echo "  1) Search HuggingFace (keyword → ranked list → pick file)"
+    echo "  2) Enter HF slug directly (org/repo[:file.gguf])"
+    echo "  3) Local .gguf path"
+    echo "  q) Cancel"
+    local choice; read -rp "> " choice
+    case "$choice" in
+        1) edit_model_search_flow ;;
+        2)
+            local v; read -rp "HF slug (org/repo or org/repo:file.gguf): " v
+            [[ -n "$v" ]] || return 0
+            if [[ "$v" == *":"* ]]; then
+                P_MODEL_MODE="hf"; P_HF_REPO="${v%%:*}"; P_HF_FILE="${v#*:}"; P_MODEL_PATH=""
+            else
+                P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""
+            fi
+            info "Queued ${P_HF_REPO}${P_HF_FILE:+:$P_HF_FILE} (download at Apply time)."
+            ;;
+        3)
+            local v; read -rp "Absolute path to .gguf: " v
+            [[ -n "$v" ]] || return 0
+            [[ "$v" == /* ]] || { warn "Must be an absolute path."; return 0; }
+            [[ -r "$v" ]] || { warn "File not readable: $v"; return 0; }
+            P_MODEL_MODE="local"; P_MODEL_PATH="$v"; P_HF_REPO=""; P_HF_FILE=""
+            info "Queued local model $v."
+            ;;
+        q|Q|"") info "Cancelled." ;;
+        *)      warn "Unknown option." ;;
+    esac
 }
 
 edit_raw() {

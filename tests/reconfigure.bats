@@ -205,3 +205,90 @@ EOF
     run validate_arg_string "--hf-repo org/repo --port 8080 --extra 'bad'"
     [ "$status" -ne 0 ]
 }
+
+# ─── HuggingFace JSON parsers ──────────────────────────────────────────
+
+@test "hf_parse_search_results: extracts id, downloads, likes as TSV" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    fixture='[
+      {"id":"bartowski/Qwen2.5-7B-Instruct-GGUF","downloads":842104,"likes":1234},
+      {"id":"TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF","downloads":512000,"likes":987}
+    ]'
+    result=$(echo "$fixture" | hf_parse_search_results)
+    [[ "$result" == *"bartowski/Qwen2.5-7B-Instruct-GGUF	842104	1234"* ]]
+    [[ "$result" == *"TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF	512000	987"* ]]
+}
+
+@test "hf_parse_search_results: missing downloads/likes defaults to 0" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    fixture='[{"id":"new/repo-GGUF"}]'
+    result=$(echo "$fixture" | hf_parse_search_results)
+    [ "$result" = "new/repo-GGUF	0	0" ]
+}
+
+@test "hf_parse_search_results: empty array yields empty output" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    result=$(echo '[]' | hf_parse_search_results)
+    [ -z "$result" ]
+}
+
+@test "hf_parse_tree_gguf: only .gguf files, sorted by size desc" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    fixture='[
+      {"type":"file","path":"README.md","size":4096},
+      {"type":"file","path":"model-Q4_K_M.gguf","size":4800000000},
+      {"type":"file","path":"model-Q8_0.gguf","size":7300000000},
+      {"type":"directory","path":"subdir"},
+      {"type":"file","path":"config.json","size":1024},
+      {"type":"file","path":"model-Q5_K_M.gguf","size":5500000000}
+    ]'
+    result=$(echo "$fixture" | hf_parse_tree_gguf)
+    # Expect three .gguf lines, Q8_0 (largest) first, then Q5_K_M, then Q4_K_M
+    [[ "$(echo "$result" | sed -n '1p')" == "model-Q8_0.gguf	7300000000" ]]
+    [[ "$(echo "$result" | sed -n '2p')" == "model-Q5_K_M.gguf	5500000000" ]]
+    [[ "$(echo "$result" | sed -n '3p')" == "model-Q4_K_M.gguf	4800000000" ]]
+    [[ "$(echo "$result" | wc -l)" -eq 3 ]]
+}
+
+@test "hf_parse_tree_gguf: directories and non-gguf files are filtered out" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    fixture='[
+      {"type":"directory","path":"assets","size":0},
+      {"type":"file","path":"tokenizer.json","size":2048000},
+      {"type":"file","path":"model.safetensors","size":15000000000}
+    ]'
+    result=$(echo "$fixture" | hf_parse_tree_gguf)
+    [ -z "$result" ]
+}
+
+@test "hf_parse_tree_gguf: missing size field defaults to 0" {
+    command -v jq >/dev/null 2>&1 || skip "jq not available"
+    fixture='[{"type":"file","path":"tiny.gguf"}]'
+    result=$(echo "$fixture" | hf_parse_tree_gguf)
+    [ "$result" = "tiny.gguf	0" ]
+}
+
+# ─── Human-readable size formatter ─────────────────────────────────────
+
+@test "human_size: bytes < 1K shows as B" {
+    [ "$(human_size 512)" = "512 B" ]
+}
+
+@test "human_size: kilobytes rounded to whole numbers" {
+    [ "$(human_size 4096)" = "4 KB" ]
+}
+
+@test "human_size: megabytes rounded to whole numbers" {
+    [ "$(human_size 2097152)" = "2 MB" ]
+}
+
+@test "human_size: gigabytes shown with one decimal" {
+    # 4.5 GB
+    result=$(human_size 4831838208)
+    [ "$result" = "4.5 GB" ]
+}
+
+@test "human_size: 7.3 GB typical Q8_0 model" {
+    result=$(human_size 7837495296)
+    [ "$result" = "7.3 GB" ]
+}
