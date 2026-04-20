@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.3.0"
+LLAMA_RECONFIGURE_VERSION="1.4.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -47,9 +47,12 @@ EDITOR JUMPS
   --ngl         GPU layer offload (-ngl)
   --cache       KV cache quant (-ctk / -ctv)
   --flash       Toggle --flash-attn
+  --ubatch      Ubatch (prompt-processing batch size, -ub)
   --listen      Listen address (--host / --port)
   --mlock       Toggle --mlock
+  --dio         Toggle -dio (direct I/O to prevent tensor hang)
   --fit         Auto-fit (--fit / --fit-ctx)
+  --n-cpu-moe   MoE expert layers on CPU (--n-cpu-moe)
   --raw         Raw ExecStart arg-string editor (advanced)
 
 READ-ONLY / MAINTENANCE
@@ -106,6 +109,8 @@ ensure_root() {
 #   P_FIT           on / off
 #   P_FIT_CTX       65536
 #   P_N_CPU_MOE     integer (MoE expert layers on CPU; empty = unset)
+#   P_UBATCH        integer (-ub; empty = unset)
+#   P_DIO           y/n
 #
 parse_unit_file() {
     local exec_line
@@ -163,6 +168,8 @@ parse_unit_file() {
     P_FIT=$(grep -oE -- '--fit (on|off)' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_FIT_CTX=$(grep -oE -- '--fit-ctx [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_N_CPU_MOE=$(grep -oE -- '--n-cpu-moe [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_UBATCH=$(grep -oE -- '(-ub|--ubatch) [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    [[ "$P_ARG_STRING" =~ (^| )-dio( |$) ]] && P_DIO="y" || P_DIO="n"
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -188,13 +195,15 @@ serialize_arg_string() {
     if [[ "$P_FIT" != "on" && -n "$P_NGL" ]]; then
         out+=" -ngl $P_NGL"
     fi
-    [[ -n "$P_HOST" ]]    && out+=" --host $P_HOST"
-    [[ -n "$P_CTX" ]]     && out+=" -c $P_CTX"
-    [[ -n "$P_CACHE_K" ]] && out+=" -ctk $P_CACHE_K"
-    [[ -n "$P_CACHE_V" ]] && out+=" -ctv $P_CACHE_V"
+    [[ -n "$P_HOST" ]]       && out+=" --host $P_HOST"
+    [[ -n "$P_CTX" ]]        && out+=" -c $P_CTX"
+    [[ -n "$P_UBATCH" ]]     && out+=" -ub $P_UBATCH"
+    [[ -n "$P_CACHE_K" ]]    && out+=" -ctk $P_CACHE_K"
+    [[ -n "$P_CACHE_V" ]]    && out+=" -ctv $P_CACHE_V"
     [[ "$P_FLASH" == "on" ]] && out+=" --flash-attn on"
     [[ "$P_MLOCK" == "y" ]]  && out+=" --mlock"
-    [[ -n "$P_N_CPU_MOE" ]] && out+=" --n-cpu-moe $P_N_CPU_MOE"
+    [[ "$P_DIO" == "y" ]]    && out+=" -dio"
+    [[ -n "$P_N_CPU_MOE" ]]  && out+=" --n-cpu-moe $P_N_CPU_MOE"
 
     printf '%s' "$out"
 }
@@ -208,27 +217,119 @@ validate_arg_string() {
     fi
 }
 
+# ─── VRAM estimation ───────────────────────────────────────────────────
+
+cache_type_bytes() {
+    case "$1" in
+        f32)                   echo "4.0" ;;
+        f16 | bf16)            echo "2.0" ;;
+        q8_0)                  echo "1.0" ;;
+        q5_0 | q5_1)           echo "0.625" ;;
+        q4_0 | q4_1 | iq4_nl)  echo "0.5" ;;
+        *)                     echo "2.0" ;;
+    esac
+}
+
+estimate_vram_usage() {
+    local model_gb="$1" ctx_size="$2" ctk="$3" n_layers="${4:-48}"
+    local bytes_per overhead kv_gb total_gb
+    bytes_per=$(cache_type_bytes "$ctk")
+    overhead=$(awk "BEGIN { printf \"%.1f\", 0.6 + $model_gb * 0.020 }")
+    kv_gb=$(awk "BEGIN { printf \"%.1f\", ($ctx_size / 1024.0) * $n_layers * $bytes_per / 512.0 * 1.12 }")
+    total_gb=$(awk "BEGIN { printf \"%.1f\", $model_gb + $kv_gb + $overhead }")
+    echo "$total_gb $model_gb $kv_gb $overhead"
+}
+
+detect_model_gb() {
+    local bytes=""
+    if [[ "$P_MODEL_MODE" == "local" && -f "${P_MODEL_PATH:-}" ]]; then
+        bytes=$(stat -c%s "$P_MODEL_PATH" 2>/dev/null || stat -f%z "$P_MODEL_PATH" 2>/dev/null || true)
+    elif [[ "$P_MODEL_MODE" == "hf" && -n "${P_HF_FILE:-}" ]]; then
+        local d
+        for d in "${HOME}/llama.cpp/models" "/home/chris/llama.cpp/models" \
+                 "${LLAMA_CACHE:-/nonexistent}"; do
+            [[ -f "${d}/${P_HF_FILE}" ]] || continue
+            bytes=$(stat -c%s "${d}/${P_HF_FILE}" 2>/dev/null || stat -f%z "${d}/${P_HF_FILE}" 2>/dev/null || true)
+            break
+        done
+    fi
+    [[ -n "${bytes:-}" && "$bytes" -gt 0 ]] && awk "BEGIN { printf \"%.1f\", $bytes / 1073741824 }"
+}
+
+detect_hw_vram_gb() {
+    local mib
+    mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true)
+    [[ "${mib:-}" =~ ^[0-9]+$ ]] && awk "BEGIN { printf \"%d\", $mib / 1024 + 0.5 }"
+}
+
 # ─── Display ───────────────────────────────────────────────────────────
 
 show_current() {
-    printf '\n%s── Current llama-server configuration ──%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
-    printf '  Unit file    : %s\n' "$UNIT_FILE"
-    printf '  GPU mode     : %s\n' "$([[ "$P_IS_CUDA" == "y" ]] && echo 'CUDA' || echo 'CPU')"
-    case "$P_MODEL_MODE" in
-        hf)    printf '  Model (HF)   : %s:%s\n' "$P_HF_REPO" "${P_HF_FILE:-(repo default)}" ;;
-        local) printf '  Model (file) : %s\n'    "$P_MODEL_PATH" ;;
-        *)     printf '  Model        : %s(not detected — check --raw)%s\n' "$C_YELLOW" "$C_RESET" ;;
-    esac
-    printf '  Context      : %s\n' "${P_CTX:-(unset)}"
-    [[ "$P_IS_CUDA" == "y" ]] && printf '  GPU layers   : %s\n' "${P_NGL:-(unset)}"
-    printf '  KV cache     : K=%s  V=%s\n' "${P_CACHE_K:-f16}" "${P_CACHE_V:-f16}"
-    printf '  Flash attn   : %s\n' "${P_FLASH:-(unset)}"
-    printf '  Listen       : %s:%s\n' "${P_HOST:-127.0.0.1}" "${P_PORT:-8080}"
-    printf '  mlock        : %s\n' "$P_MLOCK"
-    [[ "$P_IS_CUDA" == "y" ]] && printf '  --fit        : %s  (--fit-ctx %s)\n' "${P_FIT:-off}" "${P_FIT_CTX:-unset}"
-    [[ -n "$P_N_CPU_MOE" ]] && printf '  CPU MoE layers: %s\n' "$P_N_CPU_MOE"
-    printf '  Service      : %s\n' "$(systemctl is-active llama-server 2>/dev/null || echo 'inactive')"
+    local moe_disp fa_disp mlock_disp dio_disp ngl_disp
+    [[ -n "${P_N_CPU_MOE:-}" ]] && moe_disp="${P_N_CPU_MOE} layers" || moe_disp="off"
+    [[ "${P_FLASH:-}" == "on" ]] && fa_disp="on"  || fa_disp="off"
+    [[ "${P_MLOCK:-n}" == "y" ]] && mlock_disp="on" || mlock_disp="off"
+    [[ "${P_DIO:-n}"   == "y" ]] && dio_disp="on"   || dio_disp="off"
+    if [[ "${P_FIT:-}" == "on" ]]; then
+        ngl_disp="auto-fit  --fit-ctx ${P_FIT_CTX:-${P_CTX:-}}"
+    else
+        ngl_disp="${P_NGL:-99}"
+    fi
+
+    local mlock_item=6 dio_item=7
+    [[ "${P_IS_CUDA:-n}" == "y" ]] && mlock_item=7 && dio_item=8
+
     printf '\n'
+    case "$P_MODEL_MODE" in
+        hf)    printf ' Model:   %s%s%s : %s\n' \
+                   "$C_BOLD" "$P_HF_REPO" "$C_RESET" "${P_HF_FILE:-(repo default)}" ;;
+        local) printf ' Model:   %s%s%s\n' "$C_BOLD" "$P_MODEL_PATH" "$C_RESET" ;;
+        *)     printf ' %sModel:   (not detected — use raw editor)%s\n' "$C_YELLOW" "$C_RESET" ;;
+    esac
+    printf ' Listen:  %s:%s\n' "${P_HOST:-127.0.0.1}" "${P_PORT:-8080}"
+    printf ' Service: %s\n'    "$(systemctl is-active llama-server 2>/dev/null || echo 'inactive')"
+    printf '\n'
+
+    printf '%sContext & Memory:%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
+    printf ' 1. Context size:       [%s] tokens\n'              "${P_CTX:-(unset)}"
+    printf ' 2. KV cache type:      [%s]  (K and V matched)\n'  "${P_CACHE_K:-f16}"
+    printf ' 3. CPU MoE offload:    [%s]\n'                      "$moe_disp"
+    printf ' 4. Flash attention:    [%s]\n'                      "$fa_disp"
+    printf ' 5. Ubatch size:        [%s]\n'                      "${P_UBATCH:-(unset)}"
+    [[ "${P_IS_CUDA:-n}" == "y" ]] && \
+        printf ' 6. GPU layers:         [%s]  (-ngl / --fit)\n'  "$ngl_disp"
+    printf ' %s. Mem lock (--mlock): [%s]  (prevent idle swap)\n'   "$mlock_item" "$mlock_disp"
+    printf ' %s. Direct I/O (-dio):  [%s]  (prevent tensor hang)\n' "$dio_item"   "$dio_disp"
+    printf '\n'
+
+    local model_gb hw_vram
+    model_gb=$(detect_model_gb)
+    hw_vram=$(detect_hw_vram_gb)
+    if [[ -n "${model_gb:-}" && -n "${P_CTX:-}" ]]; then
+        local estimate total_gb kv_gb overhead_gb fit_color fits
+        estimate=$(estimate_vram_usage "$model_gb" "$P_CTX" "${P_CACHE_K:-f16}")
+        total_gb=$(awk '{print $1}' <<<"$estimate")
+        kv_gb=$(awk    '{print $3}' <<<"$estimate")
+        overhead_gb=$(awk '{print $4}' <<<"$estimate")
+        fit_color=""; fits="✅"
+        if [[ -n "${hw_vram:-}" ]] && \
+           awk "BEGIN { exit ($total_gb > $hw_vram) ? 0 : 1 }" 2>/dev/null; then
+            fits="❌ OOM risk"; fit_color="\e[1;31m"
+        fi
+        printf ' Model weights:    %s GB\n'  "$model_gb"
+        printf ' KV cache:         %s GB\n'  "$kv_gb"
+        printf ' Runtime overhead: ~%s GB\n' "$overhead_gb"
+        printf ' ───────────────\n'
+        if [[ -n "$fit_color" ]]; then
+            # shellcheck disable=SC2059
+            printf " Estimated total:  ${fit_color}%s / %s GB  %s\e[0m\n" \
+                "$total_gb" "${hw_vram:--}" "$fits"
+        else
+            printf ' Estimated total:  %s / %s GB  %s\n' \
+                "$total_gb" "${hw_vram:--}" "$fits"
+        fi
+        printf '\n'
+    fi
 }
 
 # ─── Editors ───────────────────────────────────────────────────────────
@@ -313,6 +414,28 @@ edit_n_cpu_moe() {
     else
         warn "Not a non-negative integer."
     fi
+}
+
+edit_ubatch() {
+    echo "Ubatch controls prompt-processing batch size."
+    echo "Larger = faster prompt ingestion, more VRAM spikes during prefill."
+    echo "Options: 512 / 1024 (recommended) / 2048 / 4096 / custom"
+    read -rp "  -ub (current: ${P_UBATCH:-(unset)}) [blank = keep, 0 = clear]: " v
+    [[ -z "$v" ]] && return 0
+    if [[ "$v" == "0" ]]; then
+        P_UBATCH=""; ok "-ub cleared"
+    elif [[ "$v" =~ ^[0-9]+$ && "$v" -ge 32 ]]; then
+        P_UBATCH="$v"; ok "-ub → $v"
+    else
+        warn "Must be a number ≥ 32 (or 0 to clear)."
+    fi
+}
+
+edit_dio() {
+    case "${P_DIO:-n}" in
+        y) P_DIO="n"; ok "-dio → off" ;;
+        *) P_DIO="y"; ok "-dio → on"  ;;
+    esac
 }
 
 # ─── HuggingFace Hub API ───────────────────────────────────────────────
@@ -644,26 +767,38 @@ rollback_unit() {
 
 main_menu() {
     while true; do
+        clear
+        printf '%s── llama-reconfigure %s ─────────────────────────────────────────%s\n' \
+            "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
-        cat <<MENU
-  1) Model          2) Context        3) GPU layers      4) KV cache
-  5) Flash-attn     6) Listen addr    7) mlock           8) --fit
-  9) CPU MoE layers  0) Raw editor
-  a) Apply and restart     d) Dry-run preview
-  r) Rollback to .bak      q) Quit
-MENU
-        local choice; read -rp "> " choice
+
+        local mlock_item=6 dio_item=7
+        [[ "${P_IS_CUDA:-n}" == "y" ]] && mlock_item=7 && dio_item=8
+
+        printf ' [m] Model   [l] Listen   [0] Raw editor\n'
+        printf ' [a] Apply and restart   [d] Dry-run   [r] Rollback   [q] Quit\n'
+        printf ' [1-%s] Change\n' "$dio_item"
+        printf '\n'
+
+        local choice; read -rp '> ' choice
         case "$choice" in
-            1) edit_model      ;;
-            2) edit_context    ;;
-            3) edit_ngl        ;;
-            4) edit_cache      ;;
-            5) edit_flash      ;;
-            6) edit_listen     ;;
-            7) edit_mlock      ;;
-            8) edit_fit        ;;
-            9) edit_n_cpu_moe  ;;
-            0) edit_raw        ;;
+            1) edit_context    ;;
+            2) edit_cache      ;;
+            3) edit_n_cpu_moe  ;;
+            4) edit_flash      ;;
+            5) edit_ubatch     ;;
+            6)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_ngl
+                else edit_mlock; fi ;;
+            7)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_mlock
+                else edit_dio; fi ;;
+            8)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_dio
+                else warn "Unknown option."; fi ;;
+            m|M) edit_model    ;;
+            l|L) edit_listen   ;;
+            0)   edit_raw      ;;
             a|A) apply_changes && return 0 ;;
             d|D) apply_changes dry ;;
             r|R) rollback_unit && return 0 ;;
@@ -705,8 +840,10 @@ main() {
         --flash)      edit_flash;   apply_changes ;;
         --listen)     edit_listen;  apply_changes ;;
         --mlock)      edit_mlock;      apply_changes ;;
+        --dio)        edit_dio;        apply_changes ;;
         --fit)        edit_fit;        apply_changes ;;
-        --n-cpu-moe)  edit_n_cpu_moe; apply_changes ;;
+        --ubatch)     edit_ubatch;     apply_changes ;;
+        --n-cpu-moe)  edit_n_cpu_moe;  apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         *)
             warn "Unknown option: $1"

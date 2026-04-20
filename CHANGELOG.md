@@ -7,6 +7,22 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 ## [Unreleased]
 
 ### Added
+- **`llama-reconfigure`: installer-style `Context & Memory` menu.**
+  The interactive menu now mirrors the `configure_context_memory` UX from
+  the main installer: a single numbered list with `[current value]` inline,
+  a live VRAM estimate block (Model weights / KV cache / Runtime overhead /
+  Estimated total) with ❌ OOM warning when the total exceeds detected GPU
+  VRAM, and `[c]`/`[1-N]`/`[d]` shortcuts. Model and Listen address moved
+  to `[m]`/`[l]` letter shortcuts to keep the numbered items focused on
+  runtime tuning. Two new parameters added:
+  - **`-ub N` (ubatch)** — controls prompt-processing batch size (`-ub`).
+    Menu item 5. Flag jump: `--ubatch`. Clears with blank-then-0.
+  - **`-dio` (Direct I/O)** — toggle for the `-dio` flag that prevents
+    tensor hang on some configurations. Menu item 7 (CPU) / 8 (CUDA).
+    Flag jump: `--dio`.
+  Supporting infrastructure: `cache_type_bytes()`, `estimate_vram_usage()`,
+  `detect_model_gb()` (stat on local path or cached HF file),
+  `detect_hw_vram_gb()` (nvidia-smi). 7 new bats tests (total: 258).
 - **`llama-reconfigure`: `--n-cpu-moe` support.**
   New menu option 9 (CPU MoE layers) and `--n-cpu-moe` flag jump let users
   set `--n-cpu-moe N` — the number of Mixture-of-Experts expert layers to
