@@ -6,6 +6,27 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **`llama-reconfigure` model editor: HuggingFace search.**
+  The model editor now offers three paths: (1) search the Hub by
+  keyword → ranked list of GGUF repos by download count → pick repo
+  → pick file from the top-level tree with human-readable sizes;
+  (2) direct-input an `org/repo[:file.gguf]` slug; (3) a local `.gguf`
+  path. Search uses the public `huggingface.co/api/models` endpoint
+  (no token needed) filtered to `gguf`, sorted by downloads. Gated
+  repos (meta-llama, google/gemma) work when `HF_TOKEN` is set in
+  `~/.env.secrets`.
+- 11 new bats tests pinning the JSON parsers (`hf_parse_search_results`,
+  `hf_parse_tree_gguf`) with fixture JSON and the `human_size` formatter
+  (total: 246).
+
+### Changed
+- `llama-reconfigure` now depends on `jq` for the search UX; direct
+  input and local-path modes still work without it. A helpful error
+  fires if `jq` is missing and the user tries to search.
+- `llama-reconfigure` version: `1.1.0` → `1.2.0` (new feature,
+  SemVer minor).
+
 ## [1.1.0] — 2026-04-20
 
 Bundled scripts this release:
