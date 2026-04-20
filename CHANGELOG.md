@@ -6,6 +6,23 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **`llama-reconfigure.sh`** — standalone, menu-driven editor for an
+  installed `llama-server.service`. Parses the existing `ExecStart`
+  in-place (preserves hand edits), lets the user change any of:
+  model (HF slug `org/repo:file.gguf` or local path), context size,
+  `-ngl`, KV cache quant, `--flash-attn`, listen host/port, `--mlock`,
+  `--fit` / `--fit-ctx`, or raw args. On apply: downloads the new
+  model (blocking, with curl progress bar), snapshots the current unit
+  to `.bak`, writes the new unit, `daemon-reload`, restart, polls
+  `is-active` for 10s, tails `journalctl` on failure, and offers
+  `--rollback`. Flags (`--model`, `--context`, …) jump straight into
+  specific editors for scripting. Does NOT modify `ubuntu-prep-setup.sh`
+  — install `llama-reconfigure` independently once the base installer
+  has set up llama.cpp.
+- 15 new bats tests pinning the parser, serializer, round-trip, and
+  the single-quote validator (total: 235).
+
 ## [1.0.1] — 2026-04-19
 
 Second-pass code review hardening. All 15 findings from an independent review

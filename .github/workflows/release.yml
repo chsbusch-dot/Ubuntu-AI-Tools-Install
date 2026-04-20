@@ -24,10 +24,14 @@ jobs:
           sudo apt-get install -y shellcheck bats
 
       - name: Shellcheck
-        run: shellcheck --severity=warning ubuntu-prep-setup.sh
+        run: |
+          shellcheck --severity=warning ubuntu-prep-setup.sh
+          [ -f llama-reconfigure.sh ] && shellcheck --severity=warning llama-reconfigure.sh || true
 
       - name: Bash syntax
-        run: bash -n ubuntu-prep-setup.sh
+        run: |
+          bash -n ubuntu-prep-setup.sh
+          [ -f llama-reconfigure.sh ] && bash -n llama-reconfigure.sh || true
 
       - name: Bats test suite
         run: bats tests/
@@ -50,7 +54,10 @@ jobs:
 
       - name: Generate SHA256SUMS
         run: |
-          sha256sum ubuntu-prep-setup.sh > SHA256SUMS
+          {
+            sha256sum ubuntu-prep-setup.sh
+            [ -f llama-reconfigure.sh ] && sha256sum llama-reconfigure.sh
+          } > SHA256SUMS
           cat SHA256SUMS
 
       - name: Extract release notes from CHANGELOG
@@ -77,8 +84,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Build the asset list dynamically so old tags (pre-llama-reconfigure)
+          # don't fail the release step.
+          ASSETS=(ubuntu-prep-setup.sh SHA256SUMS)
+          [ -f llama-reconfigure.sh ] && ASSETS+=(llama-reconfigure.sh)
+
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file RELEASE_NOTES.md \
-            ubuntu-prep-setup.sh SHA256SUMS
+            "${ASSETS[@]}"
