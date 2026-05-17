@@ -106,6 +106,15 @@ llama_is_active() {
     systemctl is-active --quiet "$LLAMA_SERVICE" 2>/dev/null
 }
 
+# Robust "does this unit exist on this host" check. Uses `systemctl cat`
+# which succeeds iff systemd can find + read the unit file. Earlier
+# versions of this script grep'd `systemctl list-unit-files --no-legend`
+# output, but that output format drifts across systemd versions and was
+# missing some installed units on the openclaw box (false negatives).
+unit_exists() {
+    systemctl cat --no-pager "$1" >/dev/null 2>&1
+}
+
 av_compose_present() {
     [[ -n "$AV_COMPOSE_FILE" && -f "$AV_COMPOSE_FILE" ]]
 }
@@ -144,7 +153,7 @@ cmd_llm() {
     local u stopped_any=0
     while read -r u; do
         [[ -z "$u" ]] && continue
-        if systemctl list-unit-files --no-legend 2>/dev/null | grep -q "^${u}\.service"; then
+        if unit_exists "$u"; then
             if systemctl is-active --quiet "$u" 2>/dev/null; then
                 info "Stopping $u…"
                 sudo_if_needed systemctl stop "$u" \
@@ -199,7 +208,7 @@ cmd_llm() {
 cmd_av() {
     info "Switching to AV mode (TTS + STT own the GPU)…"
 
-    if systemctl list-unit-files --no-legend 2>/dev/null | grep -q "^${LLAMA_SERVICE}\.service"; then
+    if unit_exists "$LLAMA_SERVICE"; then
         if llama_is_active; then
             info "Stopping $LLAMA_SERVICE…"
             sudo_if_needed systemctl stop "$LLAMA_SERVICE" \
@@ -217,7 +226,7 @@ cmd_av() {
     local u started_any=0
     while read -r u; do
         [[ -z "$u" ]] && continue
-        if systemctl list-unit-files --no-legend 2>/dev/null | grep -q "^${u}\.service"; then
+        if unit_exists "$u"; then
             info "Starting $u…"
             sudo_if_needed systemctl start "$u" \
                 || warn "systemctl start $u failed. Inspect: journalctl -u $u -n 50"
