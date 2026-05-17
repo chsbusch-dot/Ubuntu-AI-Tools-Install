@@ -49,11 +49,10 @@ GPU_MODE_VERSION="1.0.0"
 # ubuntu-prep-setup.sh + a mentorbot AV stack under ~/mentorbot.
 LLAMA_SERVICE="${LLAMA_SERVICE:-llama-server}"
 # Comma-separated systemd units that own the AV side of the GPU.
-# Default matches a mentorbot install: a NIM ASR wrapper unit (which
-# in turn manages the parakeet docker container) plus a native
-# Python FastAPI TTS backend. Add / remove units as your stack grows
-# (e.g. when a Magpie TTS unit lands).
-AV_SYSTEMD_SERVICES="${AV_SYSTEMD_SERVICES:-local-stt-nim,local-tts-backend}"
+# Default matches a mentorbot install: NIM ASR (Parakeet) + NIM TTS
+# (Magpie) docker wrapper units plus a native Python FastAPI TTS
+# backend. Add / remove units as your stack grows.
+AV_SYSTEMD_SERVICES="${AV_SYSTEMD_SERVICES:-local-stt-nim,local-tts-nim,local-tts-backend}"
 # Optional: a docker compose file whose services should ALSO be torn
 # down/up. Empty by default — most installs run everything under
 # systemd. Set to a path to opt in.
