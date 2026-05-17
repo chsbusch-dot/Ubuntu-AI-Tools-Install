@@ -273,17 +273,21 @@ cmd_av() {
 cmd_status() {
     printf '\n%s── GPU mode status ──%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
 
-    # LLM side
+    # LLM side. `systemctl is-active` prints the state to stdout AND
+    # exits non-zero for anything other than `active` — including
+    # `activating`, `failed`, `inactive`. We want the stdout value
+    # either way, so `|| true` swallows the exit code without
+    # appending an extra word to the capture.
     local llama_state
-    llama_state="$(systemctl is-active "$LLAMA_SERVICE" 2>/dev/null || echo 'inactive')"
-    printf '  %-26s %s\n' "$LLAMA_SERVICE:" "$llama_state"
+    llama_state="$(systemctl is-active "$LLAMA_SERVICE" 2>/dev/null || true)"
+    printf '  %-26s %s\n' "$LLAMA_SERVICE:" "${llama_state:-unknown}"
 
-    # AV systemd units
+    # AV systemd units — same capture trick as above.
     local u state
     while read -r u; do
         [[ -z "$u" ]] && continue
-        state="$(systemctl is-active "$u" 2>/dev/null || echo 'inactive')"
-        printf '  %-26s %s\n' "$u:" "$state"
+        state="$(systemctl is-active "$u" 2>/dev/null || true)"
+        printf '  %-26s %s\n' "$u:" "${state:-unknown}"
     done < <(av_systemd_units)
 
     # Optional compose stack
