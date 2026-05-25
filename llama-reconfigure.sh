@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.5.0"
+LLAMA_RECONFIGURE_VERSION="1.6.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"

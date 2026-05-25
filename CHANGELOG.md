@@ -6,6 +6,31 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.6.0] — llama-reconfigure — 2026-05-25
+
+### Added
+- `--jinja` toggle (Jinja template processing)
+- `--reasoning on/off` toggle
+- `--parallel N` parallel request slots
+- Model architecture compatibility warnings: GQA models warn when
+  flash-attn is off + non-f16 KV; MoE models hint to set --n-cpu-moe
+- `[u]` Update llama.cpp menu item: git pull + incremental CMake rebuild
+  + cmake --install, runs git commands as service user to avoid ownership errors
+- `llama-sync.sh`: sync .gguf model files between servers over SSH
+
+### Fixed
+- `edit_ubatch`: missing `local v` + set -e hazard on blank input
+- Serializer silently dropped `--flash-attn off` / `--reasoning off` on round-trip
+- `systemd-analyze verify` block was logically inverted (no-op); simplified
+- `P_RAW_OVERRIDE` not cleared on re-parse (stale state after update_llama_cpp)
+- hf_download: downloaded blobs owned by root (Permission denied for service user);
+  now chowns entire repo_dir to service user after download
+- Benchmark fa_list now respects P_FLASH=on (GQA models no longer sweep fa=0)
+
+### Changed
+- Item numbering logic extracted to `menu_item_numbers()` helper —
+  show_current and main_menu no longer duplicate the CUDA/non-CUDA shift logic
+
 ### Added
 - **`llama-reconfigure`: VRAM estimate for un-downloaded HF models.**
   Picking a too-big model from the search UI used to succeed silently;
