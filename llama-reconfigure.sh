@@ -121,6 +121,9 @@ ensure_root() {
 #   P_DIO           y/n
 #   P_GRP_ATTN_N    integer (--grp-attn-n; empty = unset / disabled)
 #   P_GRP_ATTN_W    integer (--grp-attn-w; empty = unset)
+#   P_JINJA         y/n
+#   P_REASONING     on / off / (empty = unset)
+#   P_PARALLEL      integer (--parallel; empty = unset)
 #
 parse_unit_file() {
     local exec_line
@@ -186,6 +189,11 @@ parse_unit_file() {
     [[ "$P_ARG_STRING" =~ (^| )-dio( |$) ]] && P_DIO="y" || P_DIO="n"
     P_GRP_ATTN_N=$(grep -oE -- '--grp-attn-n [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_GRP_ATTN_W=$(grep -oE -- '--grp-attn-w [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    [[ "$P_ARG_STRING" == *"--jinja"* ]] && P_JINJA="y" || P_JINJA="n"
+    if [[ "$P_ARG_STRING" == *"--reasoning on"* ]]; then P_REASONING="on"
+    elif [[ "$P_ARG_STRING" == *"--reasoning off"* ]]; then P_REASONING="off"
+    else P_REASONING=""; fi
+    P_PARALLEL=$(grep -oE -- '--parallel [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -222,6 +230,9 @@ serialize_arg_string() {
     [[ -n "$P_N_CPU_MOE" ]]     && out+=" --n-cpu-moe $P_N_CPU_MOE"
     [[ -n "${P_GRP_ATTN_N:-}" ]] && out+=" --grp-attn-n $P_GRP_ATTN_N"
     [[ -n "${P_GRP_ATTN_W:-}" ]] && out+=" --grp-attn-w $P_GRP_ATTN_W"
+    [[ "${P_JINJA:-n}" == "y" ]]     && out+=" --jinja"
+    [[ "${P_REASONING:-}" == "on" ]] && out+=" --reasoning on"
+    [[ -n "${P_PARALLEL:-}" ]]       && out+=" --parallel $P_PARALLEL"
 
     printf '%s' "$out"
 }
@@ -470,19 +481,21 @@ detect_hw_vram_gb() {
 # ─── Display ───────────────────────────────────────────────────────────
 
 show_current() {
-    local moe_disp fa_disp mlock_disp dio_disp ngl_disp
+    local moe_disp fa_disp mlock_disp dio_disp ngl_disp jinja_disp reasoning_disp
     [[ -n "${P_N_CPU_MOE:-}" ]] && moe_disp="${P_N_CPU_MOE} layers" || moe_disp="off"
     [[ "${P_FLASH:-}" == "on" ]] && fa_disp="on"  || fa_disp="off"
     [[ "${P_MLOCK:-n}" == "y" ]] && mlock_disp="on" || mlock_disp="off"
     [[ "${P_DIO:-n}"   == "y" ]] && dio_disp="on"   || dio_disp="off"
+    [[ "${P_JINJA:-n}" == "y" ]] && jinja_disp="on" || jinja_disp="off"
+    reasoning_disp="${P_REASONING:-(unset)}"
     if [[ "${P_FIT:-}" == "on" ]]; then
         ngl_disp="auto-fit  --fit-ctx ${P_FIT_CTX:-${P_CTX:-}}"
     else
         ngl_disp="${P_NGL:-99}"
     fi
 
-    local mlock_item=6 dio_item=7 grp_item=8
-    if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; fi
+    local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11
+    if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; fi
 
     printf '\n'
     case "$P_MODEL_MODE" in
@@ -507,7 +520,10 @@ show_current() {
     printf ' %s. Direct I/O (-dio):  [%s]  (prevent tensor hang)\n' "$dio_item"   "$dio_disp"
     local grp_disp="off"
     if [[ -n "${P_GRP_ATTN_N:-}" ]]; then grp_disp="n=${P_GRP_ATTN_N} w=${P_GRP_ATTN_W:-512}"; fi
-    printf ' %s. Group attention:    [%s]  (--grp-attn-n / --grp-attn-w)\n' "$grp_item" "$grp_disp"
+    printf ' %s. Group attention:    [%s]  (--grp-attn-n / --grp-attn-w)\n' "$grp_item"       "$grp_disp"
+    printf ' %s. Jinja templates:    [%s]\n'                                  "$jinja_item"     "$jinja_disp"
+    printf ' %s. Reasoning mode:     [%s]  (--reasoning on/off)\n'           "$reasoning_item" "$reasoning_disp"
+    printf ' %s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-(unset)}"
     printf '\n'
 
     local model_gb hw_vram
@@ -765,6 +781,38 @@ edit_grp_attn() {
     fi
     if [[ -n "${P_GRP_ATTN_N:-}" ]]; then
         ok "grp-attn → n=${P_GRP_ATTN_N} w=${P_GRP_ATTN_W:-512}"
+    fi
+}
+
+edit_jinja() {
+    case "${P_JINJA:-n}" in
+        y) P_JINJA="n"; ok "--jinja → off" ;;
+        *) P_JINJA="y"; ok "--jinja → on"  ;;
+    esac
+}
+
+edit_reasoning() {
+    case "${P_REASONING:-}" in
+        on)  P_REASONING="off"; ok "--reasoning → off" ;;
+        off) P_REASONING="";    ok "--reasoning cleared (unset)" ;;
+        *)   P_REASONING="on";  ok "--reasoning → on"  ;;
+    esac
+}
+
+edit_parallel() {
+    echo "  --parallel N: number of parallel request slots."
+    echo "  Higher values allow more concurrent requests at the cost of VRAM."
+    echo ""
+    local v
+    read -rp "  --parallel (current: ${P_PARALLEL:-(unset)}) [number, 0 to clear, blank to keep]: " v
+    if [[ -z "$v" ]]; then
+        : # keep current
+    elif [[ "$v" == "0" ]]; then
+        P_PARALLEL=""; ok "--parallel cleared"
+    elif [[ "$v" =~ ^[0-9]+$ ]]; then
+        P_PARALLEL="$v"; ok "--parallel → $v"
+    else
+        warn "Invalid — must be a positive integer."
     fi
 }
 
@@ -2026,12 +2074,12 @@ main_menu() {
             "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
 
-        local mlock_item=6 dio_item=7 grp_item=8
-        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; fi
+        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11
+        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; fi
 
         printf ' [m] Model   [l] Listen   [0] Raw editor   [b] Benchmark & optimize\n'
         printf ' [a] Apply and restart   [d] Dry-run   [r] Rollback   [u] Update llama.cpp   [q] Quit\n'
-        printf ' [1-%s] Change\n' "$grp_item"
+        printf ' [1-%s] Change\n' "$parallel_item"
         printf '\n'
 
         local choice; read -rp '> ' choice
@@ -2052,6 +2100,15 @@ main_menu() {
                 else edit_grp_attn; fi ;;
             9)
                 if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_grp_attn
+                else edit_jinja; fi ;;
+            10)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_jinja
+                else edit_reasoning; fi ;;
+            11)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_reasoning
+                else edit_parallel; fi ;;
+            12)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_parallel
                 else warn "Unknown option."; fi ;;
             m|M) edit_model    ;;
             l|L) edit_listen   ;;
@@ -2104,6 +2161,9 @@ main() {
         --ubatch)     edit_ubatch;     apply_changes ;;
         --n-cpu-moe)  edit_n_cpu_moe;  apply_changes ;;
         --grp-attn)   edit_grp_attn;   apply_changes ;;
+        --jinja)      edit_jinja;      apply_changes ;;
+        --reasoning)  edit_reasoning;  apply_changes ;;
+        --parallel)   edit_parallel;   apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         --benchmark)
             local preset="${2:-chat}"

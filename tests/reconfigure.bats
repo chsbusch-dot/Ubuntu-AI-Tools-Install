@@ -1088,3 +1088,126 @@ EOF
     }
     ! detect_llama_src_dir
 }
+
+# ─── --jinja ───────────────────────────────────────────────────────────────
+
+@test "parse: --jinja sets P_JINJA=y" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --jinja >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_JINJA" = "y" ]
+}
+
+@test "parse: --jinja absent → P_JINJA=n" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_JINJA" = "n" ]
+}
+
+@test "serialize: --jinja included when P_JINJA=y" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="y"; P_REASONING=""; P_PARALLEL=""
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --jinja"* ]]
+}
+
+@test "serialize: --jinja absent when P_JINJA=n" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--jinja"* ]]
+}
+
+@test "round-trip: --jinja survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --jinja >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --jinja"* ]]
+}
+
+# ─── --reasoning ───────────────────────────────────────────────────────────
+
+@test "parse: --reasoning on sets P_REASONING=on" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --reasoning on >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_REASONING" = "on" ]
+}
+
+@test "parse: --reasoning off sets P_REASONING=off" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --reasoning off >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_REASONING" = "off" ]
+}
+
+@test "parse: --reasoning absent → P_REASONING empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_REASONING" ]
+}
+
+@test "serialize: --reasoning on included when P_REASONING=on" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING="on"; P_PARALLEL=""
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --reasoning on"* ]]
+}
+
+@test "serialize: --reasoning absent when P_REASONING empty" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--reasoning"* ]]
+}
+
+@test "round-trip: --reasoning on survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --reasoning on >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --reasoning on"* ]]
+}
+
+# ─── --parallel ────────────────────────────────────────────────────────────
+
+@test "parse: --parallel N sets P_PARALLEL" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --parallel 4 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_PARALLEL" = "4" ]
+}
+
+@test "parse: --parallel absent → P_PARALLEL empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_PARALLEL" ]
+}
+
+@test "serialize: --parallel N included when P_PARALLEL set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL="4"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --parallel 4"* ]]
+}
+
+@test "serialize: --parallel absent when P_PARALLEL empty" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--parallel"* ]]
+}
+
+@test "round-trip: --parallel 4 survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --parallel 4 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --parallel 4"* ]]
+}
