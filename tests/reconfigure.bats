@@ -130,7 +130,8 @@ EOF
     P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""
     P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
     result=$(serialize_arg_string)
-    [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080" ]
+    # -ub 512 and --parallel 1 are always emitted (hard defaults)
+    [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080 -ub 512 --parallel 1" ]
 }
 
 @test "serialize: full CUDA config is deterministic" {
@@ -139,7 +140,7 @@ EOF
     P_CTX="32768"; P_CACHE_K="q8_0"; P_CACHE_V="q8_0"
     P_FLASH="on"; P_MLOCK="y"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
     result=$(serialize_arg_string)
-    [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080 -ngl 99 --host 0.0.0.0 -c 32768 -ctk q8_0 -ctv q8_0 --flash-attn on --mlock" ]
+    [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080 -ngl 99 --host 0.0.0.0 -c 32768 -ub 512 -ctk q8_0 -ctv q8_0 --flash-attn on --mlock --parallel 1" ]
 }
 
 @test "serialize: --fit on suppresses -ngl (they are mutually exclusive)" {
@@ -158,7 +159,7 @@ EOF
     P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
     P_HF_REPO=""; P_HF_FILE=""
     result=$(serialize_arg_string)
-    [ "$result" = "--model /m/path.gguf --port 8080" ]
+    [ "$result" = "--model /m/path.gguf --port 8080 -ub 512 --parallel 1" ]
 }
 
 @test "serialize: --fit-ctx defaults to 65536 if unset" {
@@ -1196,13 +1197,13 @@ EOF
     [[ "$result" == *" --parallel 4"* ]]
 }
 
-@test "serialize: --parallel absent when P_PARALLEL empty" {
+@test "serialize: --parallel defaults to 1 when P_PARALLEL empty" {
     P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
     P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
     P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
     P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
     result=$(serialize_arg_string)
-    [[ "$result" != *"--parallel"* ]]
+    [[ "$result" == *" --parallel 1"* ]]
 }
 
 @test "round-trip: --parallel 4 survives parse → serialize" {

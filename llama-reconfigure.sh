@@ -222,7 +222,7 @@ serialize_arg_string() {
     fi
     [[ -n "$P_HOST" ]]       && out+=" --host $P_HOST"
     [[ -n "$P_CTX" ]]        && out+=" -c $P_CTX"
-    [[ -n "$P_UBATCH" ]]     && out+=" -ub $P_UBATCH"
+    out+=" -ub ${P_UBATCH:-512}"
     [[ -n "$P_CACHE_K" ]]    && out+=" -ctk $P_CACHE_K"
     [[ -n "$P_CACHE_V" ]]    && out+=" -ctv $P_CACHE_V"
     # Emit both on and off explicitly — the parser records "off" from existing
@@ -237,7 +237,7 @@ serialize_arg_string() {
     [[ "${P_JINJA:-n}" == "y" ]]     && out+=" --jinja"
     if [[ "${P_REASONING:-}" == "on" ]]; then out+=" --reasoning on"
     elif [[ "${P_REASONING:-}" == "off" ]]; then out+=" --reasoning off"; fi
-    [[ -n "${P_PARALLEL:-}" ]]       && out+=" --parallel $P_PARALLEL"
+    out+=" --parallel ${P_PARALLEL:-1}"
 
     printf '%s' "$out"
 }
