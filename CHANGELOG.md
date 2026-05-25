@@ -6,6 +6,145 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.6.0] — llama-reconfigure — 2026-05-25
+
+### Added
+- `--jinja` toggle (Jinja template processing)
+- `--reasoning on/off` toggle
+- `--parallel N` parallel request slots
+- Model architecture compatibility warnings: GQA models warn when
+  flash-attn is off + non-f16 KV; MoE models hint to set --n-cpu-moe
+- `[u]` Update llama.cpp menu item: git pull + incremental CMake rebuild
+  + cmake --install, runs git commands as service user to avoid ownership errors
+- `llama-sync.sh`: sync .gguf model files between servers over SSH
+
+### Fixed
+- `edit_ubatch`: missing `local v` + set -e hazard on blank input
+- Serializer silently dropped `--flash-attn off` / `--reasoning off` on round-trip
+- `systemd-analyze verify` block was logically inverted (no-op); simplified
+- `P_RAW_OVERRIDE` not cleared on re-parse (stale state after update_llama_cpp)
+- hf_download: downloaded blobs owned by root (Permission denied for service user);
+  now chowns entire repo_dir to service user after download
+- Benchmark fa_list now respects P_FLASH=on (GQA models no longer sweep fa=0)
+
+### Changed
+- Item numbering logic extracted to `menu_item_numbers()` helper —
+  show_current and main_menu no longer duplicate the CUDA/non-CUDA shift logic
+
+### Added
+- **`llama-reconfigure`: VRAM estimate for un-downloaded HF models.**
+  Picking a too-big model from the search UI used to succeed silently;
+  the OOM only surfaced during `apply_changes` after a 15-min
+  download. Now:
+  - `P_HF_FILE_BYTES` captures the picked file's size from the Hub
+    tree listing (`edit_model_search_flow`) or a fresh `HEAD` probe
+    (direct slug input, via new `hf_head_content_length`).
+  - `detect_model_gb` falls back to `P_HF_FILE_BYTES` when the
+    `.gguf` isn't on disk yet, so the main-menu "Model weights / KV
+    cache / Runtime overhead / Estimated total" block (with ❌ OOM
+    warning) appears immediately after the user picks a model —
+    before they commit to the download. Lets a user back out of a
+    70 B Q5_K_M on a 24 GB GPU the moment they pick it.
+  - 5 new bats tests pinning the fallback, precedence, and curl-fail
+    safety (total: 60 in `reconfigure.bats`, 280 repo-wide).
+- **`llama-reconfigure`: benchmark optimizations (~50% faster).**
+  Three improvements to the `[b]` sweep make it realistic to run on
+  large models without sitting through 40+ minutes of silent GPU
+  churn:
+  - **Adaptive two-pass.** Pass 1 runs every candidate cache type
+    at `-r 1` (fast triage). The winner is re-run alone at `-r 3`
+    (confident number). Final table shows pass-2 numbers for the
+    winner, pass-1 numbers for the losers. Saves ~40% vs. running
+    every ctk at `-r 2`.
+  - **VRAM pre-filter.** Before launching `llama-bench`, each ctk's
+    estimated VRAM (`model_gb + kv_gb + overhead`) is compared
+    against detected `hw_vram`. Cache types that wouldn't fit are
+    skipped with a visible `⊘ ctk=f16 skipped (27 GB > 24 GB VRAM)`
+    log line — no more 10-minute failed run to discover the OOM.
+  - **Workload-aware ubatch default.** For `p ≤ 512` (`openclaw`,
+    `chat`) the ubatch sweep is fixed at `512` (the llama.cpp default)
+    since ub doesn't move the needle on short prompts. For `p > 512`
+    (`coding`, `summarize`) ub sweeps `1024,2048`. Halves cell count
+    on short-prompt presets.
+  Env overrides still work: `BENCH_UBATCH`, `BENCH_CTK`, `BENCH_REPS`.
+- **`llama-reconfigure`: `--n-cpu-moe` architecture hints.**
+  The editor now prints a short table of typical values per
+  architecture family (non-MoE → unset, Mixtral 8x7B → 2–4,
+  Qwen-MoE → 4–8, DeepSeek-MoE → 8–16, GPT-OSS → 1–2) before
+  prompting, so users pick a sensible starting number instead of
+  guessing. Semantics also align with `edit_ubatch`: blank keeps
+  the current value, `0` clears.
+- **`llama-reconfigure`: benchmark & optimize.**
+  New `[b]` menu entry (and `--benchmark [PRESET]` flag jump) sweeps
+  `-ub × -ctk/-ctv × -fa` with `llama-bench` across four workload
+  presets and ranks the combinations by predicted wall-clock time
+  for that workload:
+  - **`openclaw`** — p=64 n=256 (short system prompt, short reply;
+    routing traffic from the OpenClaw coordinator)
+  - **`chat`** — p=512 n=1024 (moderate prompt + reply)
+  - **`coding`** — p=8192 n=2048 (large context in, medium out)
+  - **`summarize`** — p=32768 n=512 (huge prompt, short output)
+
+  Scoring formula `total_time = p/pp_toks_s + n/tg_toks_s` naturally
+  picks different winners for different workload shapes: a short-reply
+  workload favours tg throughput, a 32k-prompt summarisation workload
+  is pp-dominated. K and V cache are locked to the same type (mixed
+  types disable GPU offload), so we run one `llama-bench` invocation
+  per cache type and merge results.
+
+  The sweep automatically stops `llama-server` (if active) to free the
+  GPU, writes raw JSON to `/var/lib/llama-reconfigure/bench-*.json`
+  for history, restarts the service, then prints a ranked table with
+  `★` on the winner. If the user accepts, `P_UBATCH`/`P_CACHE_K`/
+  `P_CACHE_V`/`P_FLASH` are mutated and `apply_changes` runs. New
+  path helpers (`detect_llama_cache`, `detect_user_from_unit`,
+  `resolve_local_gguf`) locate the `.gguf` on disk from any user's
+  unit file, replacing an earlier hard-coded `/home/chris/...`
+  fallback. 12 new bats tests pin the path helpers, the preset
+  table, and the scorer (total: 270).
+- **`llama-reconfigure`: installer-style `Context & Memory` menu.**
+  The interactive menu now mirrors the `configure_context_memory` UX from
+  the main installer: a single numbered list with `[current value]` inline,
+  a live VRAM estimate block (Model weights / KV cache / Runtime overhead /
+  Estimated total) with ❌ OOM warning when the total exceeds detected GPU
+  VRAM, and `[c]`/`[1-N]`/`[d]` shortcuts. Model and Listen address moved
+  to `[m]`/`[l]` letter shortcuts to keep the numbered items focused on
+  runtime tuning. Two new parameters added:
+  - **`-ub N` (ubatch)** — controls prompt-processing batch size (`-ub`).
+    Menu item 5. Flag jump: `--ubatch`. Clears with blank-then-0.
+  - **`-dio` (Direct I/O)** — toggle for the `-dio` flag that prevents
+    tensor hang on some configurations. Menu item 7 (CPU) / 8 (CUDA).
+    Flag jump: `--dio`.
+  Supporting infrastructure: `cache_type_bytes()`, `estimate_vram_usage()`,
+  `detect_model_gb()` (stat on local path or cached HF file),
+  `detect_hw_vram_gb()` (nvidia-smi). 7 new bats tests (total: 258).
+- **`llama-reconfigure`: `--n-cpu-moe` support.**
+  New menu option 9 (CPU MoE layers) and `--n-cpu-moe` flag jump let users
+  set `--n-cpu-moe N` — the number of Mixture-of-Experts expert layers to
+  evaluate on CPU instead of GPU. Useful for large MoE models (Mixtral,
+  DeepSeek-MoE, Qwen-MoE) when VRAM is tight. Parsed from and serialized
+  to the systemd ExecStart like all other flags; blank input clears the
+  flag entirely. 5 new bats tests (total: 251).
+- **`llama-reconfigure` model editor: HuggingFace search.**
+  The model editor now offers three paths: (1) search the Hub by
+  keyword → ranked list of GGUF repos by download count → pick repo
+  → pick file from the top-level tree with human-readable sizes;
+  (2) direct-input an `org/repo[:file.gguf]` slug; (3) a local `.gguf`
+  path. Search uses the public `huggingface.co/api/models` endpoint
+  (no token needed) filtered to `gguf`, sorted by downloads. Gated
+  repos (meta-llama, google/gemma) work when `HF_TOKEN` is set in
+  `~/.env.secrets`.
+- 11 new bats tests pinning the JSON parsers (`hf_parse_search_results`,
+  `hf_parse_tree_gguf`) with fixture JSON and the `human_size` formatter
+  (total: 246).
+
+### Changed
+- `llama-reconfigure` now depends on `jq` for the search UX; direct
+  input and local-path modes still work without it. A helpful error
+  fires if `jq` is missing and the user tries to search.
+- `llama-reconfigure` version: `1.4.0` → `1.5.0` (benchmark &
+  optimize feature, SemVer minor).
+
 ## [1.1.0] — 2026-04-20
 
 Bundled scripts this release:
