@@ -503,7 +503,7 @@ show_current() {
     [[ "${P_MLOCK:-n}" == "y" ]] && mlock_disp="on" || mlock_disp="off"
     [[ "${P_DIO:-n}"   == "y" ]] && dio_disp="on"   || dio_disp="off"
     [[ "${P_JINJA:-n}" == "y" ]] && jinja_disp="on" || jinja_disp="off"
-    reasoning_disp="${P_REASONING:-(unset)}"
+    reasoning_disp="${P_REASONING:-off}"
     if [[ "${P_FIT:-}" == "on" ]]; then
         ngl_disp="auto-fit  --fit-ctx ${P_FIT_CTX:-${P_CTX:-}}"
     else
@@ -528,7 +528,7 @@ show_current() {
     printf ' 2. KV cache type:      [%s]  (K and V matched)\n'  "${P_CACHE_K:-f16}"
     printf ' 3. CPU MoE offload:    [%s]\n'                      "$moe_disp"
     printf ' 4. Flash attention:    [%s]\n'                      "$fa_disp"
-    printf ' 5. Ubatch size:        [%s]\n'                      "${P_UBATCH:-(unset)}"
+    printf ' 5. Ubatch size:        [%s]\n'                      "${P_UBATCH:-512}"
     [[ "${P_IS_CUDA:-n}" == "y" ]] && \
         printf ' 6. GPU layers:         [%s]  (-ngl / --fit)\n'  "$ngl_disp"
     printf ' %s. Mem lock (--mlock): [%s]  (prevent idle swap)\n'   "$mlock_item" "$mlock_disp"
@@ -538,7 +538,7 @@ show_current() {
     printf ' %s. Group attention:    [%s]  (--grp-attn-n / --grp-attn-w)\n' "$grp_item"       "$grp_disp"
     printf ' %s. Jinja templates:    [%s]\n'                                  "$jinja_item"     "$jinja_disp"
     printf ' %s. Reasoning mode:     [%s]  (--reasoning on/off)\n'           "$reasoning_item" "$reasoning_disp"
-    printf ' %s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-(unset)}"
+    printf ' %s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-1}"
     printf '\n'
 
     local model_gb hw_vram
