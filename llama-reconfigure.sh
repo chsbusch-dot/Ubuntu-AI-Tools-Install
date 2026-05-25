@@ -1801,29 +1801,38 @@ apply_changes() {
     # actual download into its native $LLAMA_CACHE layout on first start
     # — downloading ourselves to a different path wastes disk because
     # llama-server won't recognise it.
-    if [[ "$dry" != "dry" && "$P_MODEL_MODE" == "hf" && -n "$P_HF_FILE" ]]; then
-        if ! hf_check_reachable "$P_HF_REPO" "$P_HF_FILE"; then
-            warn "Aborting apply — model not reachable."
-            return 1
-        fi
-        ok "Model reachable on HuggingFace."
-
-        local _cached; _cached=$(resolve_local_gguf)
-        if [[ -z "$_cached" ]] || ! validate_gguf "$_cached" 2>/dev/null; then
-            local _hint=""
-            [[ "${P_HF_FILE_BYTES:-}" =~ ^[0-9]+$ ]] && (( P_HF_FILE_BYTES > 0 )) && \
-                _hint=" ($(human_size "$P_HF_FILE_BYTES"))"
-            echo ""
-            local _dl
-            read -rp "  Model not yet cached${_hint}. Download now so the service starts immediately? [y/N]: " _dl
-            if [[ "$_dl" == [yY] ]]; then
-                hf_download "$P_HF_REPO" "$P_HF_FILE" || return 1
-            else
-                info "Skipped — llama-server will download on first start."
-                info "Watch: journalctl -u llama-server -f"
-            fi
+    if [[ "$dry" != "dry" && "$P_MODEL_MODE" == "hf" ]]; then
+        if [[ -z "${P_HF_FILE:-}" ]]; then
+            # Repo-only mode — no --hf-file specified. llama-server will pick
+            # and download a file automatically on first start. Warn the user
+            # since it often picks the largest unquantized variant.
+            warn "No --hf-file set — llama-server will auto-select a file from ${P_HF_REPO}."
+            warn "This is often the largest unquantized variant. Consider setting a specific file."
+            info "Watch download progress: journalctl -u llama-server -f"
         else
-            ok "Model already cached: ${_cached}"
+            if ! hf_check_reachable "$P_HF_REPO" "$P_HF_FILE"; then
+                warn "Aborting apply — model not reachable."
+                return 1
+            fi
+            ok "Model reachable on HuggingFace."
+
+            local _cached; _cached=$(resolve_local_gguf)
+            if [[ -z "$_cached" ]] || ! validate_gguf "$_cached" 2>/dev/null; then
+                local _hint=""
+                [[ "${P_HF_FILE_BYTES:-}" =~ ^[0-9]+$ ]] && (( P_HF_FILE_BYTES > 0 )) && \
+                    _hint=" ($(human_size "$P_HF_FILE_BYTES"))"
+                echo ""
+                local _dl
+                read -rp "  Model not yet cached${_hint}. Download now so the service starts immediately? [y/N]: " _dl
+                if [[ "$_dl" == [yY] ]]; then
+                    hf_download "$P_HF_REPO" "$P_HF_FILE" || return 1
+                else
+                    info "Skipped — llama-server will download on first start."
+                    info "Watch: journalctl -u llama-server -f"
+                fi
+            else
+                ok "Model already cached: ${_cached}"
+            fi
         fi
     fi
 
