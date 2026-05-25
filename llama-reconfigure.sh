@@ -158,6 +158,7 @@ parse_unit_file() {
     fi
 
     P_HF_REPO=""; P_HF_FILE=""; P_MODEL_PATH=""; P_MODEL_MODE=""
+    P_RAW_OVERRIDE=""   # clear any raw-edit override so the parsed state is canonical
     # Byte size of the HF file when we've queried it via HEAD — used by
     # detect_model_gb() to show the VRAM estimate before the model is
     # downloaded to local disk. Reset on every parse.
@@ -224,14 +225,18 @@ serialize_arg_string() {
     [[ -n "$P_UBATCH" ]]     && out+=" -ub $P_UBATCH"
     [[ -n "$P_CACHE_K" ]]    && out+=" -ctk $P_CACHE_K"
     [[ -n "$P_CACHE_V" ]]    && out+=" -ctv $P_CACHE_V"
-    [[ "$P_FLASH" == "on" ]] && out+=" --flash-attn on"
+    # Emit both on and off explicitly — the parser records "off" from existing
+    # units and a round-trip must preserve it; silence means "use server default".
+    if [[ "$P_FLASH" == "on" ]]; then out+=" --flash-attn on"
+    elif [[ "$P_FLASH" == "off" ]]; then out+=" --flash-attn off"; fi
     [[ "$P_MLOCK" == "y" ]]  && out+=" --mlock"
     [[ "$P_DIO" == "y" ]]        && out+=" -dio"
     [[ -n "$P_N_CPU_MOE" ]]     && out+=" --n-cpu-moe $P_N_CPU_MOE"
     [[ -n "${P_GRP_ATTN_N:-}" ]] && out+=" --grp-attn-n $P_GRP_ATTN_N"
     [[ -n "${P_GRP_ATTN_W:-}" ]] && out+=" --grp-attn-w $P_GRP_ATTN_W"
     [[ "${P_JINJA:-n}" == "y" ]]     && out+=" --jinja"
-    [[ "${P_REASONING:-}" == "on" ]] && out+=" --reasoning on"
+    if [[ "${P_REASONING:-}" == "on" ]]; then out+=" --reasoning on"
+    elif [[ "${P_REASONING:-}" == "off" ]]; then out+=" --reasoning off"; fi
     [[ -n "${P_PARALLEL:-}" ]]       && out+=" --parallel $P_PARALLEL"
 
     printf '%s' "$out"
@@ -480,6 +485,17 @@ detect_hw_vram_gb() {
 
 # ─── Display ───────────────────────────────────────────────────────────
 
+# menu_item_numbers — sets item-number variables used by both show_current
+# and main_menu so the two never drift out of sync.
+# Call with: eval "$(menu_item_numbers)"
+menu_item_numbers() {
+    if [[ "${P_IS_CUDA:-n}" == "y" ]]; then
+        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12'
+    else
+        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11'
+    fi
+}
+
 show_current() {
     local moe_disp fa_disp mlock_disp dio_disp ngl_disp jinja_disp reasoning_disp
     [[ -n "${P_N_CPU_MOE:-}" ]] && moe_disp="${P_N_CPU_MOE} layers" || moe_disp="off"
@@ -494,8 +510,7 @@ show_current() {
         ngl_disp="${P_NGL:-99}"
     fi
 
-    local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11
-    if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; fi
+    eval "$(menu_item_numbers)"
 
     printf '\n'
     case "$P_MODEL_MODE" in
@@ -732,8 +747,9 @@ edit_ubatch() {
     echo "Ubatch controls prompt-processing batch size."
     echo "Larger = faster prompt ingestion, more VRAM spikes during prefill."
     echo "Options: 512 / 1024 (recommended) / 2048 / 4096 / custom"
+    local v
     read -rp "  -ub (current: ${P_UBATCH:-(unset)}) [blank = keep, 0 = clear]: " v
-    [[ -z "$v" ]] && return 0
+    if [[ -z "$v" ]]; then return 0; fi
     if [[ "$v" == "0" ]]; then
         P_UBATCH=""; ok "-ub cleared"
     elif [[ "$v" =~ ^[0-9]+$ && "$v" -ge 32 ]]; then
@@ -1844,9 +1860,7 @@ apply_changes() {
     fi
 
     info "Validating unit with systemd-analyze…"
-    if ! systemd-analyze verify "$new_unit" 2>&1 | grep -v '^$' >&2; then
-        : # some versions of systemd-analyze are chatty even on success; don't treat as failure
-    fi
+    systemd-analyze verify "$new_unit" 2>/dev/null || true
 
     info "Stopping llama-server…"
     systemctl stop llama-server 2>/dev/null || true
