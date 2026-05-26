@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.6.0"
+LLAMA_RECONFIGURE_VERSION="1.7.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -195,6 +195,8 @@ parse_unit_file() {
     elif [[ "$P_ARG_STRING" == *"--reasoning off"* ]]; then P_REASONING="off"
     else P_REASONING=""; fi
     P_PARALLEL=$(grep -oE -- '--parallel [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_SPEC_TYPE=$(grep -oE -- '--spec-type [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_SPEC_DRAFT_N_MAX=$(grep -oE -- '--spec-draft-n-max [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -238,6 +240,8 @@ serialize_arg_string() {
     if [[ "${P_REASONING:-}" == "on" ]]; then out+=" --reasoning on"
     elif [[ "${P_REASONING:-}" == "off" ]]; then out+=" --reasoning off"; fi
     out+=" --parallel ${P_PARALLEL:-1}"
+    [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && out+=" --spec-type draft-mtp"
+    [[ -n "${P_SPEC_DRAFT_N_MAX:-}" ]]      && out+=" --spec-draft-n-max $P_SPEC_DRAFT_N_MAX"
 
     printf '%s' "$out"
 }
@@ -490,9 +494,9 @@ detect_hw_vram_gb() {
 # Call with: eval "$(menu_item_numbers)"
 menu_item_numbers() {
     if [[ "${P_IS_CUDA:-n}" == "y" ]]; then
-        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12'
+        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12 spec_type_item=13 spec_draft_item=14'
     else
-        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11'
+        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13'
     fi
 }
 
@@ -539,6 +543,10 @@ show_current() {
     printf ' %s. Jinja templates:    [%s]\n'                                  "$jinja_item"     "$jinja_disp"
     printf ' %s. Reasoning mode:     [%s]  (--reasoning on/off)\n'           "$reasoning_item" "$reasoning_disp"
     printf ' %s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-1}"
+    local spec_type_disp="off"
+    [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && spec_type_disp="draft-mtp"
+    printf ' %s. Speculative type:   [%s]  (--spec-type draft-mtp)\n'       "$spec_type_item" "$spec_type_disp"
+    printf ' %s. Spec draft tokens:  [%s]  (--spec-draft-n-max; 0=clear)\n' "$spec_draft_item" "${P_SPEC_DRAFT_N_MAX:-(unset)}"
     printf '\n'
 
     local model_gb hw_vram
@@ -829,6 +837,25 @@ edit_parallel() {
         P_PARALLEL="$v"; ok "--parallel → $v"
     else
         warn "Invalid — must be a positive integer."
+    fi
+}
+
+edit_spec_type() {
+    # Toggle between draft-mtp and off.
+    if [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]]; then
+        P_SPEC_TYPE=""; ok "--spec-type cleared (speculative decoding off)"
+    else
+        P_SPEC_TYPE="draft-mtp"; ok "--spec-type → draft-mtp (MTP speculative decoding on)"
+    fi
+}
+
+edit_spec_draft_n_max() {
+    local v
+    read -rp "  --spec-draft-n-max (current: ${P_SPEC_DRAFT_N_MAX:-(unset)}) [number, 0 to clear, blank to keep]: " v
+    if [[ -z "$v" ]]; then return 0
+    elif [[ "$v" == "0" ]]; then P_SPEC_DRAFT_N_MAX=""; ok "--spec-draft-n-max cleared"
+    elif [[ "$v" =~ ^[0-9]+$ ]]; then P_SPEC_DRAFT_N_MAX="$v"; ok "--spec-draft-n-max → $v"
+    else warn "Invalid — must be a positive integer."
     fi
 }
 
@@ -2097,12 +2124,12 @@ main_menu() {
             "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
 
-        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11
-        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; fi
+        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13
+        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; spec_type_item=13; spec_draft_item=14; fi
 
         printf ' [m] Model   [l] Listen   [0] Raw editor   [b] Benchmark & optimize\n'
         printf ' [a] Apply and restart   [d] Dry-run   [r] Rollback   [u] Update llama.cpp   [q] Quit\n'
-        printf ' [1-%s] Change\n' "$parallel_item"
+        printf ' [1-%s] Change\n' "$spec_draft_item"
         printf '\n'
 
         local choice; read -rp '> ' choice
@@ -2132,6 +2159,12 @@ main_menu() {
                 else edit_parallel; fi ;;
             12)
                 if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_parallel
+                else edit_spec_type; fi ;;
+            13)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_spec_type
+                else edit_spec_draft_n_max; fi ;;
+            14)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_spec_draft_n_max
                 else warn "Unknown option."; fi ;;
             m|M) edit_model    ;;
             l|L) edit_listen   ;;
@@ -2186,7 +2219,9 @@ main() {
         --grp-attn)   edit_grp_attn;   apply_changes ;;
         --jinja)      edit_jinja;      apply_changes ;;
         --reasoning)  edit_reasoning;  apply_changes ;;
-        --parallel)   edit_parallel;   apply_changes ;;
+        --parallel)        edit_parallel;        apply_changes ;;
+        --spec-type)       edit_spec_type;       apply_changes ;;
+        --spec-draft-n-max) edit_spec_draft_n_max; apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         --benchmark)
             local preset="${2:-chat}"

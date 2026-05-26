@@ -1212,3 +1212,85 @@ EOF
     result=$(serialize_arg_string)
     [[ "$result" == *" --parallel 4"* ]]
 }
+
+# ─── --spec-type ────────────────────────────────────────────────────────────
+
+@test "parse: --spec-type draft-mtp sets P_SPEC_TYPE" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --spec-type draft-mtp >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_SPEC_TYPE" = "draft-mtp" ]
+}
+
+@test "parse: --spec-type absent → P_SPEC_TYPE empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_SPEC_TYPE" ]
+}
+
+@test "serialize: --spec-type draft-mtp included when P_SPEC_TYPE=draft-mtp" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE="draft-mtp"; P_SPEC_DRAFT_N_MAX=""
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --spec-type draft-mtp"* ]]
+}
+
+@test "serialize: --spec-type absent when P_SPEC_TYPE empty" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--spec-type"* ]]
+}
+
+@test "round-trip: --spec-type draft-mtp survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --spec-type draft-mtp >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --spec-type draft-mtp"* ]]
+}
+
+# ─── --spec-draft-n-max ─────────────────────────────────────────────────────
+
+@test "parse: --spec-draft-n-max N sets P_SPEC_DRAFT_N_MAX" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --spec-draft-n-max 4 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_SPEC_DRAFT_N_MAX" = "4" ]
+}
+
+@test "parse: --spec-draft-n-max absent → P_SPEC_DRAFT_N_MAX empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_SPEC_DRAFT_N_MAX" ]
+}
+
+@test "serialize: --spec-draft-n-max N included when P_SPEC_DRAFT_N_MAX set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX="2"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --spec-draft-n-max 2"* ]]
+}
+
+@test "serialize: --spec-draft-n-max absent when P_SPEC_DRAFT_N_MAX empty" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    result=$(serialize_arg_string)
+    [[ "$result" != *"--spec-draft-n-max"* ]]
+}
+
+@test "round-trip: --spec-draft-n-max 4 survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --spec-draft-n-max 4 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --spec-draft-n-max 4"* ]]
+}

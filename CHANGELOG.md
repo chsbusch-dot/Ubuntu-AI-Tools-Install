@@ -6,6 +6,21 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.7.0] — llama-reconfigure — 2026-05-26
+
+### Added
+- `--spec-type draft-mtp` toggle: enables the MTP speculative decoding engine.
+  Menu item 13 (CUDA) / 12 (non-CUDA). CLI flag jump: `--spec-type`.
+  Toggle: off → `draft-mtp`, `draft-mtp` → cleared.
+- `--spec-draft-n-max N` editor: sets the maximum number of draft tokens
+  (commonly 2 or 4). Blank keeps current; `0` clears.
+  Menu item 14 (CUDA) / 13 (non-CUDA). CLI flag jump: `--spec-draft-n-max`.
+- 10 new bats tests covering parse, serialize, and round-trip for both
+  new flags (total: 121 in `reconfigure.bats`).
+
+### Changed
+- `llama-reconfigure` version: `1.6.0` → `1.7.0`.
+
 ## [1.6.0] — llama-reconfigure — 2026-05-25
 
 ### Added
