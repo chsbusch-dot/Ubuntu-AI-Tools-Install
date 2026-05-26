@@ -165,12 +165,12 @@ parse_unit_file() {
     P_HF_FILE_BYTES=""
     if [[ "$P_ARG_STRING" == *"--hf-repo "* ]]; then
         P_MODEL_MODE="hf"
-        P_HF_REPO=$(grep -oE -- '--hf-repo [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1)
-        P_HF_FILE=$(grep -oE -- '--hf-file [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1)
+        P_HF_REPO=$(grep -oE -- '--hf-repo [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+        P_HF_FILE=$(grep -oE -- '--hf-file [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     elif [[ "$P_ARG_STRING" == *"--model "* || "$P_ARG_STRING" == *" -m "* ]]; then
         P_MODEL_MODE="local"
-        P_MODEL_PATH=$(grep -oE -- '--model [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1)
-        [[ -z "$P_MODEL_PATH" ]] && P_MODEL_PATH=$(grep -oE -- ' -m [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1)
+        P_MODEL_PATH=$(grep -oE -- '--model [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+        [[ -z "$P_MODEL_PATH" ]] && P_MODEL_PATH=$(grep -oE -- ' -m [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     fi
 
     P_CTX=$(grep -oE -- ' -c [0-9]+'    <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
