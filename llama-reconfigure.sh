@@ -1787,7 +1787,7 @@ bench_history() {
 
 bench_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         printf '%s── Benchmark & optimize ────────────────────────────────────%s\n\n' \
             "$C_BOLD$C_CYAN" "$C_RESET"
         printf '  Presets (pick one to sweep, or [h] for history):\n\n'
@@ -2119,7 +2119,7 @@ rollback_unit() {
 
 main_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         printf '%s── llama-reconfigure %s ─────────────────────────────────────────%s\n' \
             "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
