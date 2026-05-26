@@ -528,25 +528,25 @@ show_current() {
     printf '\n'
 
     printf '%sContext & Memory:%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
-    printf ' 1. Context size:       [%s] tokens\n'              "${P_CTX:-(unset)}"
-    printf ' 2. KV cache type:      [%s]  (K and V matched)\n'  "${P_CACHE_K:-f16}"
-    printf ' 3. CPU MoE offload:    [%s]\n'                      "$moe_disp"
-    printf ' 4. Flash attention:    [%s]\n'                      "$fa_disp"
-    printf ' 5. Ubatch size:        [%s]\n'                      "${P_UBATCH:-512}"
+    printf ' %2s. Context size:       [%s] tokens\n'              1 "${P_CTX:-(unset)}"
+    printf ' %2s. KV cache type:      [%s]  (K and V matched)\n'  2 "${P_CACHE_K:-f16}"
+    printf ' %2s. CPU MoE offload:    [%s]\n'                      3 "$moe_disp"
+    printf ' %2s. Flash attention:    [%s]\n'                      4 "$fa_disp"
+    printf ' %2s. Ubatch size:        [%s]\n'                      5 "${P_UBATCH:-512}"
     [[ "${P_IS_CUDA:-n}" == "y" ]] && \
-        printf ' 6. GPU layers:         [%s]  (-ngl / --fit)\n'  "$ngl_disp"
-    printf ' %s. Mem lock (--mlock): [%s]  (prevent idle swap)\n'   "$mlock_item" "$mlock_disp"
-    printf ' %s. Direct I/O (-dio):  [%s]  (prevent tensor hang)\n' "$dio_item"   "$dio_disp"
+        printf ' %2s. GPU layers:         [%s]  (-ngl / --fit)\n'  6 "$ngl_disp"
+    printf ' %2s. Mem lock (--mlock): [%s]  (prevent idle swap)\n'   "$mlock_item" "$mlock_disp"
+    printf ' %2s. Direct I/O (-dio):  [%s]  (prevent tensor hang)\n' "$dio_item"   "$dio_disp"
     local grp_disp="off"
     if [[ -n "${P_GRP_ATTN_N:-}" ]]; then grp_disp="n=${P_GRP_ATTN_N} w=${P_GRP_ATTN_W:-512}"; fi
-    printf ' %s. Group attention:    [%s]  (--grp-attn-n / --grp-attn-w)\n' "$grp_item"       "$grp_disp"
-    printf ' %s. Jinja templates:    [%s]\n'                                  "$jinja_item"     "$jinja_disp"
-    printf ' %s. Reasoning mode:     [%s]  (--reasoning on/off)\n'           "$reasoning_item" "$reasoning_disp"
-    printf ' %s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-1}"
+    printf ' %2s. Group attention:    [%s]  (--grp-attn-n / --grp-attn-w)\n' "$grp_item"       "$grp_disp"
+    printf ' %2s. Jinja templates:    [%s]\n'                                  "$jinja_item"     "$jinja_disp"
+    printf ' %2s. Reasoning mode:     [%s]  (--reasoning on/off)\n'           "$reasoning_item" "$reasoning_disp"
+    printf ' %2s. Parallel slots:     [%s]  (--parallel)\n'                   "$parallel_item"  "${P_PARALLEL:-1}"
     local spec_type_disp="off"
     [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && spec_type_disp="draft-mtp"
-    printf ' %s. Speculative type:   [%s]  (--spec-type draft-mtp)\n'       "$spec_type_item" "$spec_type_disp"
-    printf ' %s. Spec draft tokens:  [%s]  (--spec-draft-n-max; 0=clear)\n' "$spec_draft_item" "${P_SPEC_DRAFT_N_MAX:-(unset)}"
+    printf ' %2s. Speculative type:   [%s]  (--spec-type draft-mtp)\n'       "$spec_type_item" "$spec_type_disp"
+    printf ' %2s. Spec draft tokens:  [%s]  (--spec-draft-n-max; 0=clear)\n' "$spec_draft_item" "${P_SPEC_DRAFT_N_MAX:-(unset)}"
     printf '\n'
 
     local model_gb hw_vram
