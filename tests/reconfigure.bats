@@ -928,6 +928,53 @@ EOF
     [[ "$result" == *"gqa"* ]]
 }
 
+# ─── detect_model_max_ctx ──────────────────────────────────────────────────
+
+@test "detect_model_max_ctx: Qwen3 repo → 131072" {
+    result=$(detect_model_max_ctx "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Llama-3.1 → 131072" {
+    result=$(detect_model_max_ctx "meta-llama/Llama-3.1-8B-Instruct-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Llama-3 (original, no minor) → 8192" {
+    result=$(detect_model_max_ctx "meta-llama/Llama-3-8B-Instruct-GGUF")
+    [ "$result" = "8192" ]
+}
+
+@test "detect_model_max_ctx: Gemma-3 → 131072" {
+    result=$(detect_model_max_ctx "google/gemma-3-9b-it-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Gemma-2 → 8192" {
+    result=$(detect_model_max_ctx "google/gemma-2-9b-it-GGUF")
+    [ "$result" = "8192" ]
+}
+
+@test "detect_model_max_ctx: DeepSeek → 131072" {
+    result=$(detect_model_max_ctx "deepseek-ai/DeepSeek-R1-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Mistral → 32768" {
+    result=$(detect_model_max_ctx "mistralai/Mistral-7B-Instruct-v0.3-GGUF")
+    [ "$result" = "32768" ]
+}
+
+@test "detect_model_max_ctx: Phi-4 → 16384" {
+    result=$(detect_model_max_ctx "microsoft/phi-4-gguf")
+    [ "$result" = "16384" ]
+}
+
+@test "detect_model_max_ctx: unknown model → empty" {
+    result=$(detect_model_max_ctx "some-org/random-model-7b-GGUF")
+    [ "$result" = "" ]
+}
+
 # ─── warn_model_compat ─────────────────────────────────────────────────────
 
 @test "warn_model_compat: GQA + non-f16 KV + flash off → emits warning" {

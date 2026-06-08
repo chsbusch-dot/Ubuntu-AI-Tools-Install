@@ -6,6 +6,30 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.8.0] — llama-reconfigure — 2026-06-08
+
+### Added
+- Context size editor now shows a numbered preset menu (8k / 16k / 32k /
+  64k / 128k / 256k) with a `c` option for custom values. Blank keeps the
+  current value. Current selection is marked `← current`.
+- `detect_model_max_ctx`: pattern-matches the active repo/file slug to infer
+  the model's advertised max context. When the inferred max is known, the
+  context menu shows it and marks presets that exceed it with `⚠ may exceed
+  model max`. Advisory only — user can still select any value.
+- Model file picker (`_edit_model_file_picker`): shared helper that fetches
+  the HF tree for a repo and lets the user pick a `.gguf` file. Used by:
+  - Option 2 in `edit_model` when no `:file` suffix is given (previously
+    left llama-server to auto-select; now always shows the file picker).
+  - New option 4 in `edit_model`: "Pick a different file from current repo"
+    (shown only when already in HF mode with a repo set).
+  - `edit_model_search_flow` (refactored to call the helper instead of
+    duplicating the logic).
+- 9 new bats tests for `detect_model_max_ctx` (total: 130 in
+  `reconfigure.bats`).
+
+### Changed
+- `llama-reconfigure` version: `1.7.0` → `1.8.0`.
+
 ## [1.7.0] — llama-reconfigure — 2026-05-26
 
 ### Added

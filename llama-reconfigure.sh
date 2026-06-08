@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.7.0"
+LLAMA_RECONFIGURE_VERSION="1.8.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -583,11 +583,55 @@ show_current() {
 # Each editor mutates the P_* state in memory. Apply writes to disk.
 
 edit_context() {
-    local v
-    read -rp "Context size (current: ${P_CTX:-unset}) [blank = keep]: " v
-    [[ -n "$v" ]] || return 0
-    [[ "$v" =~ ^[0-9]+$ ]] || { warn "Not a number."; return 0; }
-    P_CTX="$v"
+    local model_id="${P_HF_REPO:-}/${P_HF_FILE:-}/${P_MODEL_PATH:-}"
+    local max_ctx
+    max_ctx=$(detect_model_max_ctx "$model_id")
+
+    local -a preset_vals=(8192 16384 32768 65536 131072 262144)
+    local -a preset_labels=("8k   (8,192)   " "16k  (16,384) " "32k  (32,768) " "64k  (65,536) " "128k (131,072)" "256k (262,144)")
+
+    echo ""
+    printf '%sContext window size:%s\n' "$C_BOLD" "$C_RESET"
+    if [[ -n "$max_ctx" ]]; then
+        printf '  Inferred model max: %s tokens (%sk)\n' "$max_ctx" "$(( max_ctx / 1024 ))"
+    fi
+    echo ""
+
+    local i
+    for i in "${!preset_vals[@]}"; do
+        local v="${preset_vals[$i]}"
+        local suffix=""
+        [[ "${P_CTX:-}" == "$v" ]] && suffix="  ← current"
+        if [[ -n "$max_ctx" && "$v" -gt "$max_ctx" ]]; then
+            suffix="  ⚠ may exceed model max"
+        fi
+        printf '  %d. %s  %s\n' "$((i+1))" "${preset_labels[$i]}" "$suffix"
+    done
+    echo "  c. Custom number"
+    echo ""
+
+    local pick
+    read -rp "  Pick [1-6, c, blank = keep (${P_CTX:-(unset)})]: " pick
+    [[ -n "$pick" ]] || return 0
+
+    local new_ctx
+    case "$pick" in
+        [1-6])
+            new_ctx="${preset_vals[$((pick-1))]}"
+            if [[ -n "$max_ctx" && "$new_ctx" -gt "$max_ctx" ]]; then
+                warn "Ctx $new_ctx may exceed model max $max_ctx — server might refuse to start."
+            fi
+            P_CTX="$new_ctx" ;;
+        c|C)
+            local v
+            read -rp "  Custom ctx size: " v
+            [[ "$v" =~ ^[0-9]+$ ]] || { warn "Not a number."; return 0; }
+            if [[ -n "$max_ctx" && "$v" -gt "$max_ctx" ]]; then
+                warn "Ctx $v may exceed model max $max_ctx — server might refuse to start."
+            fi
+            P_CTX="$v" ;;
+        *)  warn "Unknown option." ;;
+    esac
 }
 
 edit_gpu_layers() {
@@ -921,6 +965,49 @@ require_jq() {
 }
 
 # Interactive search flow. Mutates P_HF_REPO / P_HF_FILE / P_MODEL_MODE.
+# ---------------------------------------------------------------------------
+# _edit_model_file_picker <repo>
+# Fetch the GGUF file list for <repo>, display it, and let the user pick.
+# On success: sets P_HF_FILE and P_HF_FILE_BYTES; returns 0.
+# On cancel or error: prints a message; returns 1 (P_HF_FILE unchanged).
+# ---------------------------------------------------------------------------
+_edit_model_file_picker() {
+    local repo="$1"
+    info "Listing files for ${repo}…"
+    local tree_raw; tree_raw=$(hf_api_tree "$repo" || true)
+    if [[ -z "$tree_raw" ]]; then
+        warn "Couldn't fetch file list. Repo may be gated — set HF_TOKEN in ~/.env.secrets."
+        return 1
+    fi
+
+    local -a files=() sizes=()
+    while IFS=$'\t' read -r path size; do
+        [[ -n "$path" ]] || continue
+        files+=("$path"); sizes+=("$size")
+    done < <(printf '%s' "$tree_raw" | hf_parse_tree_gguf)
+
+    if [[ "${#files[@]}" -eq 0 ]]; then
+        warn "No .gguf files in ${repo}."
+        return 1
+    fi
+
+    echo ""
+    local i
+    for i in "${!files[@]}"; do
+        printf '  %2d) %-60s  %s\n' \
+            "$((i+1))" "${files[$i]}" "$(human_size "${sizes[$i]}")"
+    done
+    echo ""
+    local pick
+    read -rp "Pick a file [1-${#files[@]}, blank = cancel]: " pick
+    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 1; }
+    (( pick >= 1 && pick <= ${#files[@]} )) || { warn "Out of range."; return 1; }
+
+    P_HF_FILE="${files[$((pick-1))]}"
+    P_HF_FILE_BYTES="${sizes[$((pick-1))]}"
+    return 0
+}
+
 edit_model_search_flow() {
     require_jq || return 1
 
@@ -957,43 +1044,12 @@ edit_model_search_flow() {
     (( pick >= 1 && pick <= ${#ids[@]} )) || { warn "Out of range."; return 0; }
     local repo="${ids[$((pick-1))]}"
 
-    info "Listing files for ${repo}…"
-    local tree_raw; tree_raw=$(hf_api_tree "$repo" || true)
-    if [[ -z "$tree_raw" ]]; then
-        warn "Couldn't fetch file list. Repo may be gated — set HF_TOKEN in ~/.env.secrets."
-        return 1
-    fi
-
-    local -a files=() sizes=()
-    while IFS=$'\t' read -r path size; do
-        [[ -n "$path" ]] || continue
-        files+=("$path"); sizes+=("$size")
-    done < <(printf '%s' "$tree_raw" | hf_parse_tree_gguf)
-
-    if [[ "${#files[@]}" -eq 0 ]]; then
-        warn "No .gguf files in ${repo}. Pick a different repo."
-        return 0
-    fi
-
-    echo ""
-    for i in "${!files[@]}"; do
-        printf '  %2d) %-60s  %s\n' \
-            "$((i+1))" "${files[$i]}" "$(human_size "${sizes[$i]}")"
-    done
-    echo ""
-    read -rp "Pick a file [1-${#files[@]}, blank = cancel]: " pick
-    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 0; }
-    (( pick >= 1 && pick <= ${#files[@]} )) || { warn "Out of range."; return 0; }
-
     P_MODEL_MODE="hf"
     P_HF_REPO="$repo"
-    P_HF_FILE="${files[$((pick-1))]}"
-    # Capture the file's byte size from the tree listing so the main menu
-    # can show a VRAM estimate immediately — before the user hits Apply
-    # and triggers a multi-GB download. Prevents the "I just picked a 70B
-    # model that will crash the GPU" scenario.
-    P_HF_FILE_BYTES="${sizes[$((pick-1))]}"
+    P_HF_FILE=""
     P_MODEL_PATH=""
+    P_HF_FILE_BYTES=""
+    _edit_model_file_picker "$repo" || return 0
     ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download happens at Apply time if not cached."
     warn_model_compat
 }
@@ -1022,6 +1078,33 @@ detect_model_arch() {
         if [[ -n "$tags" ]]; then tags+=" moe"; else tags="moe"; fi
     fi
     printf '%s' "$tags"
+}
+
+# ---------------------------------------------------------------------------
+# detect_model_max_ctx <identifier>
+# Pattern-match a repo slug, filename, or path to infer the model's
+# advertised maximum context length.  Prints the token count, or nothing
+# when the family is unknown.  Used for advisory warnings in edit_context —
+# not enforced (the user can always override with 'c' for custom).
+# ---------------------------------------------------------------------------
+detect_model_max_ctx() {
+    local id
+    id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    # Qwen (all generations) — 128k
+    if [[ "$id" =~ qwen ]]; then printf '131072'; return; fi
+    # Llama-3.1 / 3.2 / 3.3 — 128k; original Llama-3 (3.0) — 8k
+    if [[ "$id" =~ llama.?3\.[1-9] ]]; then printf '131072'; return; fi
+    if [[ "$id" =~ llama.?3 ]];        then printf '8192'; return; fi
+    # Gemma-3 — 128k; earlier Gemma — 8k
+    if [[ "$id" =~ gemma.?3 ]]; then printf '131072'; return; fi
+    if [[ "$id" =~ gemma ]];    then printf '8192'; return; fi
+    # DeepSeek (V2 / V3 / R1) — 128k
+    if [[ "$id" =~ deepseek ]]; then printf '131072'; return; fi
+    # Mistral / Mixtral — 32k
+    if [[ "$id" =~ mistral|mixtral ]]; then printf '32768'; return; fi
+    # Phi-4 — 16k
+    if [[ "$id" =~ phi.?4 ]]; then printf '16384'; return; fi
+    printf ''
 }
 
 # ---------------------------------------------------------------------------
@@ -1074,14 +1157,17 @@ warn_model_compat() {
 
 edit_model() {
     case "$P_MODEL_MODE" in
-        hf)    echo "Current: HF ${P_HF_REPO}:${P_HF_FILE:-(default)}" ;;
+        hf)    echo "Current: HF ${P_HF_REPO}:${P_HF_FILE:-(no file — llama-server will auto-select)}" ;;
         local) echo "Current: local $P_MODEL_PATH" ;;
         *)     echo "Current: (not detected)" ;;
     esac
     echo ""
     echo "  1) Search HuggingFace (keyword → ranked list → pick file)"
-    echo "  2) Enter HF slug directly (org/repo[:file.gguf])"
+    echo "  2) Enter HF slug directly (org/repo shows file picker; org/repo:file.gguf sets directly)"
     echo "  3) Local .gguf path"
+    if [[ "${P_MODEL_MODE:-}" == "hf" && -n "${P_HF_REPO:-}" ]]; then
+        printf '  4) Pick a different file from current repo (%s)\n' "$P_HF_REPO"
+    fi
     echo "  q) Cancel"
     local choice; read -rp "> " choice
     case "$choice" in
@@ -1091,23 +1177,25 @@ edit_model() {
             [[ -n "$v" ]] || return 0
             if [[ "$v" == *":"* ]]; then
                 P_MODEL_MODE="hf"; P_HF_REPO="${v%%:*}"; P_HF_FILE="${v#*:}"; P_MODEL_PATH=""
-            else
-                P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""
-            fi
-            # Probe the file's size so the VRAM estimate appears on the
-            # main menu. Non-fatal — if the HEAD fails we just show the
-            # menu without the estimate (user can still hit Apply).
-            P_HF_FILE_BYTES=""
-            if [[ -n "$P_HF_FILE" ]]; then
+                # Probe the file's size so the VRAM estimate appears on the
+                # main menu before the download triggers at Apply time.
+                P_HF_FILE_BYTES=""
                 info "Querying file size…"
                 P_HF_FILE_BYTES=$(hf_head_content_length "$P_HF_REPO" "$P_HF_FILE")
                 if [[ -n "$P_HF_FILE_BYTES" ]]; then
-                    ok "Size: $(human_size "$P_HF_FILE_BYTES")"
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "$P_HF_FILE_BYTES")) — download at Apply time."
                 else
                     warn "Couldn't probe size (check slug / HF_TOKEN for gated repos)."
+                    info "Queued ${P_HF_REPO}:${P_HF_FILE} (download at Apply time)."
+                fi
+            else
+                P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""; P_HF_FILE_BYTES=""
+                if _edit_model_file_picker "$v"; then
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download at Apply time."
+                else
+                    info "Queued ${P_HF_REPO} with no file — llama-server will auto-select."
                 fi
             fi
-            info "Queued ${P_HF_REPO}${P_HF_FILE:+:$P_HF_FILE} (download at Apply time)."
             warn_model_compat
             ;;
         3)
@@ -1120,6 +1208,15 @@ edit_model() {
             info "Queued local model $v."
             warn_model_compat
             ;;
+        4)
+            if [[ "${P_MODEL_MODE:-}" == "hf" && -n "${P_HF_REPO:-}" ]]; then
+                if _edit_model_file_picker "$P_HF_REPO"; then
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download at Apply time."
+                    warn_model_compat
+                fi
+            else
+                warn "Unknown option."
+            fi ;;
         q|Q|"") info "Cancelled." ;;
         *)      warn "Unknown option." ;;
     esac
