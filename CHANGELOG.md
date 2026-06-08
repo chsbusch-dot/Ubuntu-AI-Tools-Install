@@ -6,6 +6,21 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.10.0] — llama-reconfigure — 2026-06-08
+
+### Changed
+- Sampler params are now **always emitted with hard defaults** (like
+  `-ub 512` / `--parallel 1`), instead of only when explicitly set:
+  `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --repeat-penalty 1.05`
+  (the Qwen3 recommendations). Every config the tool writes now includes
+  the full sampler set unless individual values are overridden.
+- `show_current` displays the active default (e.g. `0.7`) rather than
+  `(unset)` for each sampler.
+- `_edit_sampler`: the `x` action now "reset to script default" (the flag
+  is always present), rather than "clear / remove".
+- 2 new bats tests (defaults-when-unset, explicit-override). Total: 148.
+- `llama-reconfigure` version: `1.9.0` → `1.10.0`.
+
 ## [1.9.0] — llama-reconfigure — 2026-06-08
 
 ### Added

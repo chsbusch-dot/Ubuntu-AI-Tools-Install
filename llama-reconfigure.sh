@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.9.0"
+LLAMA_RECONFIGURE_VERSION="1.10.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -133,11 +133,11 @@ ensure_root() {
 #   P_PARALLEL      integer (--parallel; empty = unset)
 #   P_SPEC_TYPE     draft-mtp / (empty = unset)
 #   P_SPEC_DRAFT_N_MAX  integer (--spec-draft-n-max; empty = unset)
-#   P_TEMP          float (--temp; empty = unset / llama.cpp default)
-#   P_TOP_P         float (--top-p; empty = unset)
-#   P_TOP_K         integer (--top-k; empty = unset)
-#   P_MIN_P         float (--min-p; "0.0" is valid; empty = unset)
-#   P_REPEAT_PENALTY float (--repeat-penalty; empty = unset)
+#   P_TEMP          float (--temp; empty → default 0.7, always emitted)
+#   P_TOP_P         float (--top-p; empty → default 0.8, always emitted)
+#   P_TOP_K         integer (--top-k; empty → default 20, always emitted)
+#   P_MIN_P         float (--min-p; "0.0" is valid; empty → default 0.0)
+#   P_REPEAT_PENALTY float (--repeat-penalty; empty → default 1.05)
 #
 parse_unit_file() {
     local exec_line
@@ -262,12 +262,14 @@ serialize_arg_string() {
     out+=" --parallel ${P_PARALLEL:-1}"
     [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && out+=" --spec-type draft-mtp"
     [[ -n "${P_SPEC_DRAFT_N_MAX:-}" ]]      && out+=" --spec-draft-n-max $P_SPEC_DRAFT_N_MAX"
-    # Sampler defaults. -n test (not numeric) so "0.0" (a valid min-p) emits.
-    [[ -n "${P_TEMP:-}" ]]           && out+=" --temp $P_TEMP"
-    [[ -n "${P_TOP_P:-}" ]]          && out+=" --top-p $P_TOP_P"
-    [[ -n "${P_TOP_K:-}" ]]          && out+=" --top-k $P_TOP_K"
-    [[ -n "${P_MIN_P:-}" ]]          && out+=" --min-p $P_MIN_P"
-    [[ -n "${P_REPEAT_PENALTY:-}" ]] && out+=" --repeat-penalty $P_REPEAT_PENALTY"
+    # Sampler params — always emitted with hard defaults (like -ub / --parallel).
+    # Defaults are the Qwen3 recommendations; clearing a value (blank/'x' in the
+    # editor) falls back to these, it does not remove the flag.
+    out+=" --temp ${P_TEMP:-0.7}"
+    out+=" --top-p ${P_TOP_P:-0.8}"
+    out+=" --top-k ${P_TOP_K:-20}"
+    out+=" --min-p ${P_MIN_P:-0.0}"
+    out+=" --repeat-penalty ${P_REPEAT_PENALTY:-1.05}"
 
     printf '%s' "$out"
 }
@@ -576,11 +578,11 @@ show_current() {
     printf '\n'
 
     printf '%sSampling (server defaults — OpenAI client may override temp/top-p):%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
-    printf ' %2s. Temperature:        [%s]  (--temp)\n'           "$temp_item"           "${P_TEMP:-(unset)}"
-    printf ' %2s. Top-P:              [%s]  (--top-p)\n'          "$top_p_item"          "${P_TOP_P:-(unset)}"
-    printf ' %2s. Top-K:              [%s]  (--top-k)\n'          "$top_k_item"          "${P_TOP_K:-(unset)}"
-    printf ' %2s. Min-P:              [%s]  (--min-p)\n'          "$min_p_item"          "${P_MIN_P:-(unset)}"
-    printf ' %2s. Repeat penalty:     [%s]  (--repeat-penalty)\n' "$repeat_penalty_item" "${P_REPEAT_PENALTY:-(unset)}"
+    printf ' %2s. Temperature:        [%s]  (--temp)\n'           "$temp_item"           "${P_TEMP:-0.7}"
+    printf ' %2s. Top-P:              [%s]  (--top-p)\n'          "$top_p_item"          "${P_TOP_P:-0.8}"
+    printf ' %2s. Top-K:              [%s]  (--top-k)\n'          "$top_k_item"          "${P_TOP_K:-20}"
+    printf ' %2s. Min-P:              [%s]  (--min-p)\n'          "$min_p_item"          "${P_MIN_P:-0.0}"
+    printf ' %2s. Repeat penalty:     [%s]  (--repeat-penalty)\n' "$repeat_penalty_item" "${P_REPEAT_PENALTY:-1.05}"
     printf '\n'
 
     local model_gb hw_vram
@@ -938,17 +940,18 @@ edit_spec_draft_n_max() {
 }
 
 # _edit_sampler <P_VAR> <flag-label> <int|float> <hint>
-# Generic editor for sampler params. Unlike other numeric flags, 0 is a
-# MEANINGFUL value here (min-p 0.0 is the Qwen3 recommendation; temp 0.0 =
-# greedy), so 0 cannot mean "clear" — type 'x' to clear instead.
+# Generic editor for sampler params. These flags are always emitted with a
+# hard default (see serialize_arg_string), so 0 is a MEANINGFUL value here
+# (min-p 0.0 is the Qwen3 recommendation; temp 0.0 = greedy) and cannot mean
+# "clear". Type 'x' to reset to the script default instead.
 _edit_sampler() {
     local var="$1" label="$2" kind="$3" hint="$4"
     local v
-    read -rp "  ${label} (current: ${!var:-(unset)}) [number, 'x' to clear, blank to keep — ${hint}]: " v
+    read -rp "  ${label} (current: ${!var:-(default)}) [number, 'x' for default, blank to keep — ${hint}]: " v
     if [[ -z "$v" ]]; then
         return 0
     elif [[ "$v" == "x" || "$v" == "X" ]]; then
-        printf -v "$var" '%s' ""; ok "${label} cleared (llama.cpp default)"
+        printf -v "$var" '%s' ""; ok "${label} reset to script default"
     elif [[ "$kind" == "int" && "$v" =~ ^[0-9]+$ ]]; then
         printf -v "$var" '%s' "$v"; ok "${label} → $v"
     elif [[ "$kind" == "float" && "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
