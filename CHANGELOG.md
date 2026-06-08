@@ -6,6 +6,34 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+## [1.9.0] — llama-reconfigure — 2026-06-08
+
+### Added
+- Sampler-parameter editors (server-side llama-server defaults):
+  - `--temp` (temperature)
+  - `--top-p` (nucleus)
+  - `--top-k` (integer)
+  - `--min-p` (`0.0` is a valid, serialized value — the Qwen3 recommendation)
+  - `--repeat-penalty`
+  New "Sampling" section in the main menu (items 15–19 on CUDA builds,
+  14–18 on CPU builds). CLI jumps: `--temp`, `--top-p`, `--top-k`,
+  `--min-p`, `--repeat-penalty`.
+- Shared `_edit_sampler` helper. Because `0` is meaningful for these
+  params (unlike other numeric flags), clearing uses `x` rather than `0`;
+  blank keeps the current value.
+- Menu prompts surface the Qwen3 recommendations
+  (temp 0.7 / top-p 0.8 / top-k 20 / min-p 0.0 / repeat-penalty 1.05).
+- 16 new bats tests (parse / serialize / round-trip for all 5 flags,
+  incl. the `min-p 0.0` round-trip edge case and a full Qwen3 sampler-set
+  round-trip). Total: 146.
+
+### Changed
+- `main_menu` now derives its `[1-N]` range and item dispatch from
+  `menu_item_numbers` (single source of truth) instead of a duplicated
+  local block.
+- Completed the `parse_unit_file` doc header (spec + sampler vars).
+- `llama-reconfigure` version: `1.8.0` → `1.9.0`.
+
 ## [1.8.0] — llama-reconfigure — 2026-06-08
 
 ### Added

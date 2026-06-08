@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.8.0"
+LLAMA_RECONFIGURE_VERSION="1.9.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -55,6 +55,13 @@ EDITOR JUMPS
   --fit         Auto-fit (--fit / --fit-ctx)
   --n-cpu-moe   MoE expert layers on CPU (--n-cpu-moe)
   --raw         Raw ExecStart arg-string editor (advanced)
+
+SAMPLING (server-side defaults; an OpenAI client may override temp/top-p)
+  --temp        Temperature (--temp)
+  --top-p       Nucleus sampling (--top-p)
+  --top-k       Top-K sampling (--top-k)
+  --min-p       Min-P sampling (--min-p; 0.0 is valid)
+  --repeat-penalty  Repetition penalty (--repeat-penalty)
 
 BENCHMARK
   --benchmark [PRESET]   Sweep ubatch × kv-cache × flash-attn with
@@ -124,6 +131,13 @@ ensure_root() {
 #   P_JINJA         y/n
 #   P_REASONING     on / off / (empty = unset)
 #   P_PARALLEL      integer (--parallel; empty = unset)
+#   P_SPEC_TYPE     draft-mtp / (empty = unset)
+#   P_SPEC_DRAFT_N_MAX  integer (--spec-draft-n-max; empty = unset)
+#   P_TEMP          float (--temp; empty = unset / llama.cpp default)
+#   P_TOP_P         float (--top-p; empty = unset)
+#   P_TOP_K         integer (--top-k; empty = unset)
+#   P_MIN_P         float (--min-p; "0.0" is valid; empty = unset)
+#   P_REPEAT_PENALTY float (--repeat-penalty; empty = unset)
 #
 parse_unit_file() {
     local exec_line
@@ -197,6 +211,12 @@ parse_unit_file() {
     P_PARALLEL=$(grep -oE -- '--parallel [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_SPEC_TYPE=$(grep -oE -- '--spec-type [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_SPEC_DRAFT_N_MAX=$(grep -oE -- '--spec-draft-n-max [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    # Sampler defaults. top-k is integer; the rest are floats (and may be 0.0).
+    P_TEMP=$(grep -oE -- '--temp [0-9.]+'             <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_TOP_P=$(grep -oE -- '--top-p [0-9.]+'           <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_TOP_K=$(grep -oE -- '--top-k [0-9]+'            <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_MIN_P=$(grep -oE -- '--min-p [0-9.]+'           <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_REPEAT_PENALTY=$(grep -oE -- '--repeat-penalty [0-9.]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -242,6 +262,12 @@ serialize_arg_string() {
     out+=" --parallel ${P_PARALLEL:-1}"
     [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && out+=" --spec-type draft-mtp"
     [[ -n "${P_SPEC_DRAFT_N_MAX:-}" ]]      && out+=" --spec-draft-n-max $P_SPEC_DRAFT_N_MAX"
+    # Sampler defaults. -n test (not numeric) so "0.0" (a valid min-p) emits.
+    [[ -n "${P_TEMP:-}" ]]           && out+=" --temp $P_TEMP"
+    [[ -n "${P_TOP_P:-}" ]]          && out+=" --top-p $P_TOP_P"
+    [[ -n "${P_TOP_K:-}" ]]          && out+=" --top-k $P_TOP_K"
+    [[ -n "${P_MIN_P:-}" ]]          && out+=" --min-p $P_MIN_P"
+    [[ -n "${P_REPEAT_PENALTY:-}" ]] && out+=" --repeat-penalty $P_REPEAT_PENALTY"
 
     printf '%s' "$out"
 }
@@ -494,9 +520,9 @@ detect_hw_vram_gb() {
 # Call with: eval "$(menu_item_numbers)"
 menu_item_numbers() {
     if [[ "${P_IS_CUDA:-n}" == "y" ]]; then
-        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12 spec_type_item=13 spec_draft_item=14'
+        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12 spec_type_item=13 spec_draft_item=14 temp_item=15 top_p_item=16 top_k_item=17 min_p_item=18 repeat_penalty_item=19'
     else
-        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13'
+        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13 temp_item=14 top_p_item=15 top_k_item=16 min_p_item=17 repeat_penalty_item=18'
     fi
 }
 
@@ -547,6 +573,14 @@ show_current() {
     [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && spec_type_disp="draft-mtp"
     printf ' %2s. Speculative type:   [%s]  (--spec-type draft-mtp)\n'       "$spec_type_item" "$spec_type_disp"
     printf ' %2s. Spec draft tokens:  [%s]  (--spec-draft-n-max; 0=clear)\n' "$spec_draft_item" "${P_SPEC_DRAFT_N_MAX:-(unset)}"
+    printf '\n'
+
+    printf '%sSampling (server defaults — OpenAI client may override temp/top-p):%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
+    printf ' %2s. Temperature:        [%s]  (--temp)\n'           "$temp_item"           "${P_TEMP:-(unset)}"
+    printf ' %2s. Top-P:              [%s]  (--top-p)\n'          "$top_p_item"          "${P_TOP_P:-(unset)}"
+    printf ' %2s. Top-K:              [%s]  (--top-k)\n'          "$top_k_item"          "${P_TOP_K:-(unset)}"
+    printf ' %2s. Min-P:              [%s]  (--min-p)\n'          "$min_p_item"          "${P_MIN_P:-(unset)}"
+    printf ' %2s. Repeat penalty:     [%s]  (--repeat-penalty)\n' "$repeat_penalty_item" "${P_REPEAT_PENALTY:-(unset)}"
     printf '\n'
 
     local model_gb hw_vram
@@ -902,6 +936,33 @@ edit_spec_draft_n_max() {
     else warn "Invalid — must be a positive integer."
     fi
 }
+
+# _edit_sampler <P_VAR> <flag-label> <int|float> <hint>
+# Generic editor for sampler params. Unlike other numeric flags, 0 is a
+# MEANINGFUL value here (min-p 0.0 is the Qwen3 recommendation; temp 0.0 =
+# greedy), so 0 cannot mean "clear" — type 'x' to clear instead.
+_edit_sampler() {
+    local var="$1" label="$2" kind="$3" hint="$4"
+    local v
+    read -rp "  ${label} (current: ${!var:-(unset)}) [number, 'x' to clear, blank to keep — ${hint}]: " v
+    if [[ -z "$v" ]]; then
+        return 0
+    elif [[ "$v" == "x" || "$v" == "X" ]]; then
+        printf -v "$var" '%s' ""; ok "${label} cleared (llama.cpp default)"
+    elif [[ "$kind" == "int" && "$v" =~ ^[0-9]+$ ]]; then
+        printf -v "$var" '%s' "$v"; ok "${label} → $v"
+    elif [[ "$kind" == "float" && "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        printf -v "$var" '%s' "$v"; ok "${label} → $v"
+    else
+        warn "Invalid — must be a ${kind}."
+    fi
+}
+
+edit_temp()           { _edit_sampler P_TEMP           "--temp"           float "creativity; Qwen3 rec: 0.7"; }
+edit_top_p()          { _edit_sampler P_TOP_P          "--top-p"          float "nucleus; Qwen3 rec: 0.8"; }
+edit_top_k()          { _edit_sampler P_TOP_K          "--top-k"          int   "Qwen3 rec: 20"; }
+edit_min_p()          { _edit_sampler P_MIN_P          "--min-p"          float "Qwen3 rec: 0.0"; }
+edit_repeat_penalty() { _edit_sampler P_REPEAT_PENALTY "--repeat-penalty" float "Qwen3 rec: 1.05"; }
 
 # ─── HuggingFace Hub API ───────────────────────────────────────────────
 #
@@ -2221,12 +2282,12 @@ main_menu() {
             "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
 
-        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13
-        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; spec_type_item=13; spec_draft_item=14; fi
+        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13 temp_item=14 top_p_item=15 top_k_item=16 min_p_item=17 repeat_penalty_item=18
+        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; spec_type_item=13; spec_draft_item=14; temp_item=15; top_p_item=16; top_k_item=17; min_p_item=18; repeat_penalty_item=19; fi
 
         printf ' [m] Model   [l] Listen   [0] Raw editor   [b] Benchmark & optimize\n'
         printf ' [a] Apply and restart   [d] Dry-run   [r] Rollback   [u] Update llama.cpp   [q] Quit\n'
-        printf ' [1-%s] Change\n' "$spec_draft_item"
+        printf ' [1-%s] Change\n' "$repeat_penalty_item"
         printf '\n'
 
         local choice; read -rp '> ' choice
@@ -2262,6 +2323,21 @@ main_menu() {
                 else edit_spec_draft_n_max; fi ;;
             14)
                 if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_spec_draft_n_max
+                else edit_temp; fi ;;
+            15)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_temp
+                else edit_top_p; fi ;;
+            16)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_top_p
+                else edit_top_k; fi ;;
+            17)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_top_k
+                else edit_min_p; fi ;;
+            18)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_min_p
+                else edit_repeat_penalty; fi ;;
+            19)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_repeat_penalty
                 else warn "Unknown option."; fi ;;
             m|M) edit_model    ;;
             l|L) edit_listen   ;;
@@ -2319,6 +2395,11 @@ main() {
         --parallel)        edit_parallel;        apply_changes ;;
         --spec-type)       edit_spec_type;       apply_changes ;;
         --spec-draft-n-max) edit_spec_draft_n_max; apply_changes ;;
+        --temp)            edit_temp;            apply_changes ;;
+        --top-p)           edit_top_p;           apply_changes ;;
+        --top-k)           edit_top_k;           apply_changes ;;
+        --min-p)           edit_min_p;           apply_changes ;;
+        --repeat-penalty)  edit_repeat_penalty;  apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         --benchmark)
             local preset="${2:-chat}"
