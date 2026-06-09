@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-LLAMA_RECONFIGURE_VERSION="1.7.0"
+LLAMA_RECONFIGURE_VERSION="1.10.0"
 
 UNIT_FILE="/etc/systemd/system/llama-server.service"
 BAK_FILE="${UNIT_FILE}.bak"
@@ -55,6 +55,13 @@ EDITOR JUMPS
   --fit         Auto-fit (--fit / --fit-ctx)
   --n-cpu-moe   MoE expert layers on CPU (--n-cpu-moe)
   --raw         Raw ExecStart arg-string editor (advanced)
+
+SAMPLING (server-side defaults; an OpenAI client may override temp/top-p)
+  --temp        Temperature (--temp)
+  --top-p       Nucleus sampling (--top-p)
+  --top-k       Top-K sampling (--top-k)
+  --min-p       Min-P sampling (--min-p; 0.0 is valid)
+  --repeat-penalty  Repetition penalty (--repeat-penalty)
 
 BENCHMARK
   --benchmark [PRESET]   Sweep ubatch × kv-cache × flash-attn with
@@ -124,6 +131,13 @@ ensure_root() {
 #   P_JINJA         y/n
 #   P_REASONING     on / off / (empty = unset)
 #   P_PARALLEL      integer (--parallel; empty = unset)
+#   P_SPEC_TYPE     draft-mtp / (empty = unset)
+#   P_SPEC_DRAFT_N_MAX  integer (--spec-draft-n-max; empty = unset)
+#   P_TEMP          float (--temp; empty → default 0.7, always emitted)
+#   P_TOP_P         float (--top-p; empty → default 0.8, always emitted)
+#   P_TOP_K         integer (--top-k; empty → default 20, always emitted)
+#   P_MIN_P         float (--min-p; "0.0" is valid; empty → default 0.0)
+#   P_REPEAT_PENALTY float (--repeat-penalty; empty → default 1.05)
 #
 parse_unit_file() {
     local exec_line
@@ -197,6 +211,12 @@ parse_unit_file() {
     P_PARALLEL=$(grep -oE -- '--parallel [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_SPEC_TYPE=$(grep -oE -- '--spec-type [^ ]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
     P_SPEC_DRAFT_N_MAX=$(grep -oE -- '--spec-draft-n-max [0-9]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    # Sampler defaults. top-k is integer; the rest are floats (and may be 0.0).
+    P_TEMP=$(grep -oE -- '--temp [0-9.]+'             <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_TOP_P=$(grep -oE -- '--top-p [0-9.]+'           <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_TOP_K=$(grep -oE -- '--top-k [0-9]+'            <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_MIN_P=$(grep -oE -- '--min-p [0-9.]+'           <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
+    P_REPEAT_PENALTY=$(grep -oE -- '--repeat-penalty [0-9.]+' <<<"$P_ARG_STRING" | awk '{print $2}' | head -1 || true)
 }
 
 # ─── Serializer ────────────────────────────────────────────────────────
@@ -242,6 +262,14 @@ serialize_arg_string() {
     out+=" --parallel ${P_PARALLEL:-1}"
     [[ "${P_SPEC_TYPE:-}" == "draft-mtp" ]] && out+=" --spec-type draft-mtp"
     [[ -n "${P_SPEC_DRAFT_N_MAX:-}" ]]      && out+=" --spec-draft-n-max $P_SPEC_DRAFT_N_MAX"
+    # Sampler params — always emitted with hard defaults (like -ub / --parallel).
+    # Defaults are the Qwen3 recommendations; clearing a value (blank/'x' in the
+    # editor) falls back to these, it does not remove the flag.
+    out+=" --temp ${P_TEMP:-0.7}"
+    out+=" --top-p ${P_TOP_P:-0.8}"
+    out+=" --top-k ${P_TOP_K:-20}"
+    out+=" --min-p ${P_MIN_P:-0.0}"
+    out+=" --repeat-penalty ${P_REPEAT_PENALTY:-1.05}"
 
     printf '%s' "$out"
 }
@@ -494,9 +522,9 @@ detect_hw_vram_gb() {
 # Call with: eval "$(menu_item_numbers)"
 menu_item_numbers() {
     if [[ "${P_IS_CUDA:-n}" == "y" ]]; then
-        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12 spec_type_item=13 spec_draft_item=14'
+        printf 'local mlock_item=7 dio_item=8 grp_item=9 jinja_item=10 reasoning_item=11 parallel_item=12 spec_type_item=13 spec_draft_item=14 temp_item=15 top_p_item=16 top_k_item=17 min_p_item=18 repeat_penalty_item=19'
     else
-        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13'
+        printf 'local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13 temp_item=14 top_p_item=15 top_k_item=16 min_p_item=17 repeat_penalty_item=18'
     fi
 }
 
@@ -549,6 +577,14 @@ show_current() {
     printf ' %2s. Spec draft tokens:  [%s]  (--spec-draft-n-max; 0=clear)\n' "$spec_draft_item" "${P_SPEC_DRAFT_N_MAX:-(unset)}"
     printf '\n'
 
+    printf '%sSampling (server defaults — OpenAI client may override temp/top-p):%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
+    printf ' %2s. Temperature:        [%s]  (--temp)\n'           "$temp_item"           "${P_TEMP:-0.7}"
+    printf ' %2s. Top-P:              [%s]  (--top-p)\n'          "$top_p_item"          "${P_TOP_P:-0.8}"
+    printf ' %2s. Top-K:              [%s]  (--top-k)\n'          "$top_k_item"          "${P_TOP_K:-20}"
+    printf ' %2s. Min-P:              [%s]  (--min-p)\n'          "$min_p_item"          "${P_MIN_P:-0.0}"
+    printf ' %2s. Repeat penalty:     [%s]  (--repeat-penalty)\n' "$repeat_penalty_item" "${P_REPEAT_PENALTY:-1.05}"
+    printf '\n'
+
     local model_gb hw_vram
     model_gb=$(detect_model_gb)
     hw_vram=$(detect_hw_vram_gb)
@@ -583,11 +619,55 @@ show_current() {
 # Each editor mutates the P_* state in memory. Apply writes to disk.
 
 edit_context() {
-    local v
-    read -rp "Context size (current: ${P_CTX:-unset}) [blank = keep]: " v
-    [[ -n "$v" ]] || return 0
-    [[ "$v" =~ ^[0-9]+$ ]] || { warn "Not a number."; return 0; }
-    P_CTX="$v"
+    local model_id="${P_HF_REPO:-}/${P_HF_FILE:-}/${P_MODEL_PATH:-}"
+    local max_ctx
+    max_ctx=$(detect_model_max_ctx "$model_id")
+
+    local -a preset_vals=(8192 16384 32768 65536 131072 262144)
+    local -a preset_labels=("8k   (8,192)   " "16k  (16,384) " "32k  (32,768) " "64k  (65,536) " "128k (131,072)" "256k (262,144)")
+
+    echo ""
+    printf '%sContext window size:%s\n' "$C_BOLD" "$C_RESET"
+    if [[ -n "$max_ctx" ]]; then
+        printf '  Inferred model max: %s tokens (%sk)\n' "$max_ctx" "$(( max_ctx / 1024 ))"
+    fi
+    echo ""
+
+    local i
+    for i in "${!preset_vals[@]}"; do
+        local v="${preset_vals[$i]}"
+        local suffix=""
+        [[ "${P_CTX:-}" == "$v" ]] && suffix="  ← current"
+        if [[ -n "$max_ctx" && "$v" -gt "$max_ctx" ]]; then
+            suffix="  ⚠ may exceed model max"
+        fi
+        printf '  %d. %s  %s\n' "$((i+1))" "${preset_labels[$i]}" "$suffix"
+    done
+    echo "  c. Custom number"
+    echo ""
+
+    local pick
+    read -rp "  Pick [1-6, c, blank = keep (${P_CTX:-(unset)})]: " pick
+    [[ -n "$pick" ]] || return 0
+
+    local new_ctx
+    case "$pick" in
+        [1-6])
+            new_ctx="${preset_vals[$((pick-1))]}"
+            if [[ -n "$max_ctx" && "$new_ctx" -gt "$max_ctx" ]]; then
+                warn "Ctx $new_ctx may exceed model max $max_ctx — server might refuse to start."
+            fi
+            P_CTX="$new_ctx" ;;
+        c|C)
+            local v
+            read -rp "  Custom ctx size: " v
+            [[ "$v" =~ ^[0-9]+$ ]] || { warn "Not a number."; return 0; }
+            if [[ -n "$max_ctx" && "$v" -gt "$max_ctx" ]]; then
+                warn "Ctx $v may exceed model max $max_ctx — server might refuse to start."
+            fi
+            P_CTX="$v" ;;
+        *)  warn "Unknown option." ;;
+    esac
 }
 
 edit_gpu_layers() {
@@ -859,6 +939,34 @@ edit_spec_draft_n_max() {
     fi
 }
 
+# _edit_sampler <P_VAR> <flag-label> <int|float> <hint>
+# Generic editor for sampler params. These flags are always emitted with a
+# hard default (see serialize_arg_string), so 0 is a MEANINGFUL value here
+# (min-p 0.0 is the Qwen3 recommendation; temp 0.0 = greedy) and cannot mean
+# "clear". Type 'x' to reset to the script default instead.
+_edit_sampler() {
+    local var="$1" label="$2" kind="$3" hint="$4"
+    local v
+    read -rp "  ${label} (current: ${!var:-(default)}) [number, 'x' for default, blank to keep — ${hint}]: " v
+    if [[ -z "$v" ]]; then
+        return 0
+    elif [[ "$v" == "x" || "$v" == "X" ]]; then
+        printf -v "$var" '%s' ""; ok "${label} reset to script default"
+    elif [[ "$kind" == "int" && "$v" =~ ^[0-9]+$ ]]; then
+        printf -v "$var" '%s' "$v"; ok "${label} → $v"
+    elif [[ "$kind" == "float" && "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        printf -v "$var" '%s' "$v"; ok "${label} → $v"
+    else
+        warn "Invalid — must be a ${kind}."
+    fi
+}
+
+edit_temp()           { _edit_sampler P_TEMP           "--temp"           float "creativity; Qwen3 rec: 0.7"; }
+edit_top_p()          { _edit_sampler P_TOP_P          "--top-p"          float "nucleus; Qwen3 rec: 0.8"; }
+edit_top_k()          { _edit_sampler P_TOP_K          "--top-k"          int   "Qwen3 rec: 20"; }
+edit_min_p()          { _edit_sampler P_MIN_P          "--min-p"          float "Qwen3 rec: 0.0"; }
+edit_repeat_penalty() { _edit_sampler P_REPEAT_PENALTY "--repeat-penalty" float "Qwen3 rec: 1.05"; }
+
 # ─── HuggingFace Hub API ───────────────────────────────────────────────
 #
 # Public API, no token required for ungated repos. HF_TOKEN is passed
@@ -921,6 +1029,49 @@ require_jq() {
 }
 
 # Interactive search flow. Mutates P_HF_REPO / P_HF_FILE / P_MODEL_MODE.
+# ---------------------------------------------------------------------------
+# _edit_model_file_picker <repo>
+# Fetch the GGUF file list for <repo>, display it, and let the user pick.
+# On success: sets P_HF_FILE and P_HF_FILE_BYTES; returns 0.
+# On cancel or error: prints a message; returns 1 (P_HF_FILE unchanged).
+# ---------------------------------------------------------------------------
+_edit_model_file_picker() {
+    local repo="$1"
+    info "Listing files for ${repo}…"
+    local tree_raw; tree_raw=$(hf_api_tree "$repo" || true)
+    if [[ -z "$tree_raw" ]]; then
+        warn "Couldn't fetch file list. Repo may be gated — set HF_TOKEN in ~/.env.secrets."
+        return 1
+    fi
+
+    local -a files=() sizes=()
+    while IFS=$'\t' read -r path size; do
+        [[ -n "$path" ]] || continue
+        files+=("$path"); sizes+=("$size")
+    done < <(printf '%s' "$tree_raw" | hf_parse_tree_gguf)
+
+    if [[ "${#files[@]}" -eq 0 ]]; then
+        warn "No .gguf files in ${repo}."
+        return 1
+    fi
+
+    echo ""
+    local i
+    for i in "${!files[@]}"; do
+        printf '  %2d) %-60s  %s\n' \
+            "$((i+1))" "${files[$i]}" "$(human_size "${sizes[$i]}")"
+    done
+    echo ""
+    local pick
+    read -rp "Pick a file [1-${#files[@]}, blank = cancel]: " pick
+    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 1; }
+    (( pick >= 1 && pick <= ${#files[@]} )) || { warn "Out of range."; return 1; }
+
+    P_HF_FILE="${files[$((pick-1))]}"
+    P_HF_FILE_BYTES="${sizes[$((pick-1))]}"
+    return 0
+}
+
 edit_model_search_flow() {
     require_jq || return 1
 
@@ -957,43 +1108,12 @@ edit_model_search_flow() {
     (( pick >= 1 && pick <= ${#ids[@]} )) || { warn "Out of range."; return 0; }
     local repo="${ids[$((pick-1))]}"
 
-    info "Listing files for ${repo}…"
-    local tree_raw; tree_raw=$(hf_api_tree "$repo" || true)
-    if [[ -z "$tree_raw" ]]; then
-        warn "Couldn't fetch file list. Repo may be gated — set HF_TOKEN in ~/.env.secrets."
-        return 1
-    fi
-
-    local -a files=() sizes=()
-    while IFS=$'\t' read -r path size; do
-        [[ -n "$path" ]] || continue
-        files+=("$path"); sizes+=("$size")
-    done < <(printf '%s' "$tree_raw" | hf_parse_tree_gguf)
-
-    if [[ "${#files[@]}" -eq 0 ]]; then
-        warn "No .gguf files in ${repo}. Pick a different repo."
-        return 0
-    fi
-
-    echo ""
-    for i in "${!files[@]}"; do
-        printf '  %2d) %-60s  %s\n' \
-            "$((i+1))" "${files[$i]}" "$(human_size "${sizes[$i]}")"
-    done
-    echo ""
-    read -rp "Pick a file [1-${#files[@]}, blank = cancel]: " pick
-    [[ -n "$pick" && "$pick" =~ ^[0-9]+$ ]] || { info "Cancelled."; return 0; }
-    (( pick >= 1 && pick <= ${#files[@]} )) || { warn "Out of range."; return 0; }
-
     P_MODEL_MODE="hf"
     P_HF_REPO="$repo"
-    P_HF_FILE="${files[$((pick-1))]}"
-    # Capture the file's byte size from the tree listing so the main menu
-    # can show a VRAM estimate immediately — before the user hits Apply
-    # and triggers a multi-GB download. Prevents the "I just picked a 70B
-    # model that will crash the GPU" scenario.
-    P_HF_FILE_BYTES="${sizes[$((pick-1))]}"
+    P_HF_FILE=""
     P_MODEL_PATH=""
+    P_HF_FILE_BYTES=""
+    _edit_model_file_picker "$repo" || return 0
     ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download happens at Apply time if not cached."
     warn_model_compat
 }
@@ -1022,6 +1142,33 @@ detect_model_arch() {
         if [[ -n "$tags" ]]; then tags+=" moe"; else tags="moe"; fi
     fi
     printf '%s' "$tags"
+}
+
+# ---------------------------------------------------------------------------
+# detect_model_max_ctx <identifier>
+# Pattern-match a repo slug, filename, or path to infer the model's
+# advertised maximum context length.  Prints the token count, or nothing
+# when the family is unknown.  Used for advisory warnings in edit_context —
+# not enforced (the user can always override with 'c' for custom).
+# ---------------------------------------------------------------------------
+detect_model_max_ctx() {
+    local id
+    id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    # Qwen (all generations) — 128k
+    if [[ "$id" =~ qwen ]]; then printf '131072'; return; fi
+    # Llama-3.1 / 3.2 / 3.3 — 128k; original Llama-3 (3.0) — 8k
+    if [[ "$id" =~ llama.?3\.[1-9] ]]; then printf '131072'; return; fi
+    if [[ "$id" =~ llama.?3 ]];        then printf '8192'; return; fi
+    # Gemma-3 — 128k; earlier Gemma — 8k
+    if [[ "$id" =~ gemma.?3 ]]; then printf '131072'; return; fi
+    if [[ "$id" =~ gemma ]];    then printf '8192'; return; fi
+    # DeepSeek (V2 / V3 / R1) — 128k
+    if [[ "$id" =~ deepseek ]]; then printf '131072'; return; fi
+    # Mistral / Mixtral — 32k
+    if [[ "$id" =~ mistral|mixtral ]]; then printf '32768'; return; fi
+    # Phi-4 — 16k
+    if [[ "$id" =~ phi.?4 ]]; then printf '16384'; return; fi
+    printf ''
 }
 
 # ---------------------------------------------------------------------------
@@ -1074,14 +1221,17 @@ warn_model_compat() {
 
 edit_model() {
     case "$P_MODEL_MODE" in
-        hf)    echo "Current: HF ${P_HF_REPO}:${P_HF_FILE:-(default)}" ;;
+        hf)    echo "Current: HF ${P_HF_REPO}:${P_HF_FILE:-(no file — llama-server will auto-select)}" ;;
         local) echo "Current: local $P_MODEL_PATH" ;;
         *)     echo "Current: (not detected)" ;;
     esac
     echo ""
     echo "  1) Search HuggingFace (keyword → ranked list → pick file)"
-    echo "  2) Enter HF slug directly (org/repo[:file.gguf])"
+    echo "  2) Enter HF slug directly (org/repo shows file picker; org/repo:file.gguf sets directly)"
     echo "  3) Local .gguf path"
+    if [[ "${P_MODEL_MODE:-}" == "hf" && -n "${P_HF_REPO:-}" ]]; then
+        printf '  4) Pick a different file from current repo (%s)\n' "$P_HF_REPO"
+    fi
     echo "  q) Cancel"
     local choice; read -rp "> " choice
     case "$choice" in
@@ -1091,23 +1241,25 @@ edit_model() {
             [[ -n "$v" ]] || return 0
             if [[ "$v" == *":"* ]]; then
                 P_MODEL_MODE="hf"; P_HF_REPO="${v%%:*}"; P_HF_FILE="${v#*:}"; P_MODEL_PATH=""
-            else
-                P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""
-            fi
-            # Probe the file's size so the VRAM estimate appears on the
-            # main menu. Non-fatal — if the HEAD fails we just show the
-            # menu without the estimate (user can still hit Apply).
-            P_HF_FILE_BYTES=""
-            if [[ -n "$P_HF_FILE" ]]; then
+                # Probe the file's size so the VRAM estimate appears on the
+                # main menu before the download triggers at Apply time.
+                P_HF_FILE_BYTES=""
                 info "Querying file size…"
                 P_HF_FILE_BYTES=$(hf_head_content_length "$P_HF_REPO" "$P_HF_FILE")
                 if [[ -n "$P_HF_FILE_BYTES" ]]; then
-                    ok "Size: $(human_size "$P_HF_FILE_BYTES")"
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "$P_HF_FILE_BYTES")) — download at Apply time."
                 else
                     warn "Couldn't probe size (check slug / HF_TOKEN for gated repos)."
+                    info "Queued ${P_HF_REPO}:${P_HF_FILE} (download at Apply time)."
+                fi
+            else
+                P_MODEL_MODE="hf"; P_HF_REPO="$v"; P_HF_FILE=""; P_MODEL_PATH=""; P_HF_FILE_BYTES=""
+                if _edit_model_file_picker "$v"; then
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download at Apply time."
+                else
+                    info "Queued ${P_HF_REPO} with no file — llama-server will auto-select."
                 fi
             fi
-            info "Queued ${P_HF_REPO}${P_HF_FILE:+:$P_HF_FILE} (download at Apply time)."
             warn_model_compat
             ;;
         3)
@@ -1120,6 +1272,15 @@ edit_model() {
             info "Queued local model $v."
             warn_model_compat
             ;;
+        4)
+            if [[ "${P_MODEL_MODE:-}" == "hf" && -n "${P_HF_REPO:-}" ]]; then
+                if _edit_model_file_picker "$P_HF_REPO"; then
+                    ok "Queued: ${P_HF_REPO}:${P_HF_FILE} ($(human_size "${P_HF_FILE_BYTES}")) — download at Apply time."
+                    warn_model_compat
+                fi
+            else
+                warn "Unknown option."
+            fi ;;
         q|Q|"") info "Cancelled." ;;
         *)      warn "Unknown option." ;;
     esac
@@ -2124,12 +2285,12 @@ main_menu() {
             "$C_BOLD$C_CYAN" "$LLAMA_RECONFIGURE_VERSION" "$C_RESET"
         show_current
 
-        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13
-        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; spec_type_item=13; spec_draft_item=14; fi
+        local mlock_item=6 dio_item=7 grp_item=8 jinja_item=9 reasoning_item=10 parallel_item=11 spec_type_item=12 spec_draft_item=13 temp_item=14 top_p_item=15 top_k_item=16 min_p_item=17 repeat_penalty_item=18
+        if [[ "${P_IS_CUDA:-n}" == "y" ]]; then mlock_item=7; dio_item=8; grp_item=9; jinja_item=10; reasoning_item=11; parallel_item=12; spec_type_item=13; spec_draft_item=14; temp_item=15; top_p_item=16; top_k_item=17; min_p_item=18; repeat_penalty_item=19; fi
 
         printf ' [m] Model   [l] Listen   [0] Raw editor   [b] Benchmark & optimize\n'
         printf ' [a] Apply and restart   [d] Dry-run   [r] Rollback   [u] Update llama.cpp   [q] Quit\n'
-        printf ' [1-%s] Change\n' "$spec_draft_item"
+        printf ' [1-%s] Change\n' "$repeat_penalty_item"
         printf '\n'
 
         local choice; read -rp '> ' choice
@@ -2165,6 +2326,21 @@ main_menu() {
                 else edit_spec_draft_n_max; fi ;;
             14)
                 if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_spec_draft_n_max
+                else edit_temp; fi ;;
+            15)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_temp
+                else edit_top_p; fi ;;
+            16)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_top_p
+                else edit_top_k; fi ;;
+            17)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_top_k
+                else edit_min_p; fi ;;
+            18)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_min_p
+                else edit_repeat_penalty; fi ;;
+            19)
+                if [[ "${P_IS_CUDA:-n}" == "y" ]]; then edit_repeat_penalty
                 else warn "Unknown option."; fi ;;
             m|M) edit_model    ;;
             l|L) edit_listen   ;;
@@ -2222,6 +2398,11 @@ main() {
         --parallel)        edit_parallel;        apply_changes ;;
         --spec-type)       edit_spec_type;       apply_changes ;;
         --spec-draft-n-max) edit_spec_draft_n_max; apply_changes ;;
+        --temp)            edit_temp;            apply_changes ;;
+        --top-p)           edit_top_p;           apply_changes ;;
+        --top-k)           edit_top_k;           apply_changes ;;
+        --min-p)           edit_min_p;           apply_changes ;;
+        --repeat-penalty)  edit_repeat_penalty;  apply_changes ;;
         --raw)        edit_raw && apply_changes ;;
         --benchmark)
             local preset="${2:-chat}"

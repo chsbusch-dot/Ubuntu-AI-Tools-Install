@@ -255,6 +255,58 @@ The file is automatically sourced by `.bashrc` and `.zshrc` and gitignored to pr
 |---|---|
 | `OLLAMA_ALLOWED_ORIGINS` | Comma-separated origins allowed to query Ollama when exposed to LAN (e.g. `https://chat.yourdomain.com`). |
 
+## Retuning llama-server with `llama-reconfigure`
+
+After the initial install, you don't need to hand-edit `/etc/systemd/system/llama-server.service` whenever you want to change a model, a flag, or a sampler default. The repo ships **`llama-reconfigure`** — a menu-driven editor that parses the existing `ExecStart`, lets you toggle individual options, then writes the unit back atomically and restarts the service. It preserves anything you've manually set that the menu doesn't touch.
+
+Run it interactively:
+
+```bash
+sudo llama-reconfigure
+```
+
+Or jump straight to a specific option:
+
+```bash
+sudo llama-reconfigure --model         # change the GGUF model
+sudo llama-reconfigure --ctx           # context window
+sudo llama-reconfigure --kv-cache-type # KV cache quantization (q4_0, q8_0, f16)
+sudo llama-reconfigure --ngl           # GPU layer offload
+sudo llama-reconfigure --temp          # sampler temperature (added in 1.10.0)
+sudo llama-reconfigure --raw           # raw ExecStart editor (advanced)
+```
+
+### Sampling controls (added in 1.10.0)
+
+`llama-reconfigure` now manages five sampler params alongside the launch flags. Defaults are Qwen3-recommended; clearing a value in the editor falls back to these:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--temp` | `0.7` | Temperature. Lower = more deterministic. |
+| `--top-p` | `0.8` | Nucleus sampling cutoff. |
+| `--top-k` | `20` | Top-K sampling cutoff. |
+| `--min-p` | `0.0` | Min-P sampling; `0.0` is valid (effectively disables min-p). |
+| `--repeat-penalty` | `1.05` | Repetition penalty. |
+
+Each value round-trips through the systemd unit, so the next `llama-reconfigure` run shows what's currently in effect. These are **server-side defaults** — an OpenAI-compatible client request that supplies its own `temperature` / `top_p` still overrides them per call.
+
+### Speculative decoding (added in 1.7.0)
+
+If your build of llama.cpp supports it, the editor exposes:
+
+| Flag | Notes |
+|---|---|
+| `--spec-type draft-mtp` | Enable Medusa-style multi-token draft heads. |
+| `--spec-draft-n-max` | Max draft tokens per step. |
+
+### Benchmark mode
+
+```bash
+sudo llama-reconfigure --benchmark
+```
+
+Sweeps `--ubatch-size × KV cache type × flash-attn` with `llama-bench`, ranks results by tokens-per-second for a chosen workload preset (chat, code, long-context, etc.), and offers to apply the winner. Useful right after a model swap.
+
 ## Testing
 
 The repository includes a comprehensive test suite in `test.sh`. It runs the following validations in order:
