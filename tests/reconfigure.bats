@@ -130,8 +130,7 @@ EOF
     P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""
     P_HOST=""; P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
     result=$(serialize_arg_string)
-    # -ub 512, --parallel 1, and the five sampler params are always emitted
-    # (hard defaults — see serialize_arg_string in llama-reconfigure.sh).
+    # -ub 512, --parallel 1, and the sampler set are always emitted (hard defaults)
     [ "$result" = "--hf-repo org/repo --hf-file m.gguf --port 8080 -ub 512 --parallel 1 --temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --repeat-penalty 1.05" ]
 }
 
@@ -929,6 +928,53 @@ EOF
     [[ "$result" == *"gqa"* ]]
 }
 
+# ─── detect_model_max_ctx ──────────────────────────────────────────────────
+
+@test "detect_model_max_ctx: Qwen3 repo → 131072" {
+    result=$(detect_model_max_ctx "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Llama-3.1 → 131072" {
+    result=$(detect_model_max_ctx "meta-llama/Llama-3.1-8B-Instruct-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Llama-3 (original, no minor) → 8192" {
+    result=$(detect_model_max_ctx "meta-llama/Llama-3-8B-Instruct-GGUF")
+    [ "$result" = "8192" ]
+}
+
+@test "detect_model_max_ctx: Gemma-3 → 131072" {
+    result=$(detect_model_max_ctx "google/gemma-3-9b-it-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Gemma-2 → 8192" {
+    result=$(detect_model_max_ctx "google/gemma-2-9b-it-GGUF")
+    [ "$result" = "8192" ]
+}
+
+@test "detect_model_max_ctx: DeepSeek → 131072" {
+    result=$(detect_model_max_ctx "deepseek-ai/DeepSeek-R1-GGUF")
+    [ "$result" = "131072" ]
+}
+
+@test "detect_model_max_ctx: Mistral → 32768" {
+    result=$(detect_model_max_ctx "mistralai/Mistral-7B-Instruct-v0.3-GGUF")
+    [ "$result" = "32768" ]
+}
+
+@test "detect_model_max_ctx: Phi-4 → 16384" {
+    result=$(detect_model_max_ctx "microsoft/phi-4-gguf")
+    [ "$result" = "16384" ]
+}
+
+@test "detect_model_max_ctx: unknown model → empty" {
+    result=$(detect_model_max_ctx "some-org/random-model-7b-GGUF")
+    [ "$result" = "" ]
+}
+
 # ─── warn_model_compat ─────────────────────────────────────────────────────
 
 @test "warn_model_compat: GQA + non-f16 KV + flash off → emits warning" {
@@ -1294,4 +1340,163 @@ EOF
     parse_unit_file
     result=$(serialize_arg_string)
     [[ "$result" == *" --spec-draft-n-max 4"* ]]
+}
+
+# ─── Sampler params: --temp / --top-p / --top-k / --min-p / --repeat-penalty ─
+
+@test "parse: --temp 0.7 sets P_TEMP" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --temp 0.7 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_TEMP" = "0.7" ]
+}
+
+@test "parse: --temp absent → P_TEMP empty" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ -z "$P_TEMP" ]
+}
+
+@test "serialize: --temp included when P_TEMP set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_TEMP="0.7"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --temp 0.7"* ]]
+}
+
+@test "round-trip: --temp 0.7 survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --temp 0.7 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --temp 0.7"* ]]
+}
+
+@test "parse: --top-p 0.8 sets P_TOP_P" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --top-p 0.8 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_TOP_P" = "0.8" ]
+}
+
+@test "serialize: --top-p included when P_TOP_P set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_TOP_P="0.8"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --top-p 0.8"* ]]
+}
+
+@test "round-trip: --top-p 0.8 survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --top-p 0.8 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --top-p 0.8"* ]]
+}
+
+@test "parse: --top-k 20 sets P_TOP_K" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --top-k 20 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_TOP_K" = "20" ]
+}
+
+@test "serialize: --top-k included when P_TOP_K set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_TOP_K="20"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --top-k 20"* ]]
+}
+
+@test "round-trip: --top-k 20 survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --top-k 20 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --top-k 20"* ]]
+}
+
+@test "parse: --min-p 0.0 sets P_MIN_P" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --min-p 0.0 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_MIN_P" = "0.0" ]
+}
+
+@test "serialize: --min-p 0.0 emitted (0.0 is a valid value, not 'unset')" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_MIN_P="0.0"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --min-p 0.0"* ]]
+}
+
+@test "round-trip: --min-p 0.0 survives parse → serialize (Qwen3 edge case)" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --min-p 0.0 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --min-p 0.0"* ]]
+}
+
+@test "parse: --repeat-penalty 1.05 sets P_REPEAT_PENALTY" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --repeat-penalty 1.05 >> \"/log\" 2>&1'"
+    parse_unit_file
+    [ "$P_REPEAT_PENALTY" = "1.05" ]
+}
+
+@test "serialize: --repeat-penalty included when P_REPEAT_PENALTY set" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_REPEAT_PENALTY="1.05"
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --repeat-penalty 1.05"* ]]
+}
+
+@test "round-trip: full Qwen3 sampler set survives parse → serialize" {
+    write_unit "ExecStart=/bin/bash -c 'exec /usr/local/bin/llama-server --hf-repo x/y --hf-file z.gguf --port 8080 --temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --repeat-penalty 1.05 >> \"/log\" 2>&1'"
+    parse_unit_file
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --temp 0.7"* ]]
+    [[ "$result" == *" --top-p 0.8"* ]]
+    [[ "$result" == *" --top-k 20"* ]]
+    [[ "$result" == *" --min-p 0.0"* ]]
+    [[ "$result" == *" --repeat-penalty 1.05"* ]]
+}
+
+@test "serialize: sampler defaults emitted when unset (Qwen3 values are the hard defaults)" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_TEMP=""; P_TOP_P=""; P_TOP_K=""; P_MIN_P=""; P_REPEAT_PENALTY=""
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --temp 0.7"* ]]
+    [[ "$result" == *" --top-p 0.8"* ]]
+    [[ "$result" == *" --top-k 20"* ]]
+    [[ "$result" == *" --min-p 0.0"* ]]
+    [[ "$result" == *" --repeat-penalty 1.05"* ]]
+}
+
+@test "serialize: explicit sampler value overrides the default" {
+    P_MODEL_MODE="hf"; P_HF_REPO="x/y"; P_HF_FILE="z.gguf"; P_PORT="8080"
+    P_CTX=""; P_NGL=""; P_CACHE_K=""; P_CACHE_V=""; P_FLASH=""; P_HOST=""
+    P_MLOCK="n"; P_FIT=""; P_FIT_CTX=""; P_N_CPU_MOE=""; P_UBATCH=""; P_DIO="n"
+    P_GRP_ATTN_N=""; P_GRP_ATTN_W=""; P_JINJA="n"; P_REASONING=""; P_PARALLEL=""
+    P_SPEC_TYPE=""; P_SPEC_DRAFT_N_MAX=""
+    P_TEMP="0.2"; P_TOP_P=""; P_TOP_K=""; P_MIN_P=""; P_REPEAT_PENALTY=""
+    result=$(serialize_arg_string)
+    [[ "$result" == *" --temp 0.2"* ]]
+    [[ "$result" != *" --temp 0.7"* ]]
 }
