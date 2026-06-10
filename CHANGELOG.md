@@ -6,6 +6,75 @@ All notable changes to `ubuntu-prep-setup.sh` are tracked here. Format follows
 
 ## [Unreleased]
 
+### Added
+- 27 bats tests covering `detect_model_max_ctx` and the five sampler
+  params (parse / serialize / round-trip, incl. the `min-p 0.0` edge case,
+  defaults-when-unset, and explicit-override), taking `reconfigure.bats`
+  from 121 → 148. The 1.8.0–1.10.0 feature code shipped without tests;
+  this backfills the coverage.
+
+## [1.10.0] — llama-reconfigure — 2026-06-09
+
+### Added
+- README: new "Retuning llama-server with `llama-reconfigure`" section
+  documenting sampling controls, speculative decoding, and benchmark mode.
+
+### Changed
+- Sampler params are now **always emitted with hard defaults** (like
+  `-ub 512` / `--parallel 1`), instead of only when explicitly set:
+  `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --repeat-penalty 1.05`
+  (the Qwen3 recommendations). Every config the tool writes now includes
+  the full sampler set unless individual values are overridden.
+- `show_current` displays the active default (e.g. `0.7`) rather than
+  `(unset)` for each sampler.
+- `_edit_sampler`: the `x` action now "reset to script default" (the flag
+  is always present), rather than "clear / remove".
+- `llama-reconfigure` version: `1.9.0` → `1.10.0`.
+
+## [1.9.0] — llama-reconfigure — 2026-06-09
+
+### Added
+- Sampler-parameter editors (server-side llama-server defaults):
+  - `--temp` (temperature)
+  - `--top-p` (nucleus)
+  - `--top-k` (integer)
+  - `--min-p` (`0.0` is a valid, serialized value — the Qwen3 recommendation)
+  - `--repeat-penalty`
+  New "Sampling" section in the main menu (items 15–19 on CUDA builds,
+  14–18 on CPU builds). CLI jumps: `--temp`, `--top-p`, `--top-k`,
+  `--min-p`, `--repeat-penalty`.
+- Shared `_edit_sampler` helper. Because `0` is meaningful for these
+  params (unlike other numeric flags), clearing uses `x` rather than `0`;
+  blank keeps the current value.
+- Menu prompts surface the Qwen3 recommendations
+  (temp 0.7 / top-p 0.8 / top-k 20 / min-p 0.0 / repeat-penalty 1.05).
+
+### Changed
+- Completed the `parse_unit_file` doc header (spec + sampler vars).
+- `llama-reconfigure` version: `1.8.0` → `1.9.0`.
+
+## [1.8.0] — llama-reconfigure — 2026-06-09
+
+### Added
+- Context size editor now shows a numbered preset menu (8k / 16k / 32k /
+  64k / 128k / 256k) with a `c` option for custom values. Blank keeps the
+  current value. Current selection is marked `← current`.
+- `detect_model_max_ctx`: pattern-matches the active repo/file slug to infer
+  the model's advertised max context. When the inferred max is known, the
+  context menu shows it and marks presets that exceed it with `⚠ may exceed
+  model max`. Advisory only — user can still select any value.
+- Model file picker (`_edit_model_file_picker`): shared helper that fetches
+  the HF tree for a repo and lets the user pick a `.gguf` file. Used by:
+  - Option 2 in `edit_model` when no `:file` suffix is given (previously
+    left llama-server to auto-select; now always shows the file picker).
+  - New option 4 in `edit_model`: "Pick a different file from current repo"
+    (shown only when already in HF mode with a repo set).
+  - `edit_model_search_flow` (refactored to call the helper instead of
+    duplicating the logic).
+
+### Changed
+- `llama-reconfigure` version: `1.7.0` → `1.8.0`.
+
 ## [1.7.0] — llama-reconfigure — 2026-05-26
 
 ### Added
