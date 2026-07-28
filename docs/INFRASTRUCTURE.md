@@ -13,12 +13,12 @@ Last updated: 2026-07-28
 ## Domains
 
 All domains are consolidated at **Porkbun** and **Cloudflare**, with one
-exception currently at Dynadot.
+permanent exception: cbus.ch stays at Dynadot.
 
 | Domain | Registrar / DNS | Notes |
 |---|---|---|
 | mvp.sv | DNS on Cloudflare | Formerly at IONOS (1&1); points to Cloudflare as of July 2026. |
-| cbus.ch | Dynadot | Moved to Dynadot as of July 2026. |
+| cbus.ch | Dynadot | Staying at Dynadot permanently (deliberate exception to the consolidation). |
 | (all others) | Porkbun / Cloudflare | Consolidated after the IONOS and GoDaddy cancellations. |
 
 ## Open items
