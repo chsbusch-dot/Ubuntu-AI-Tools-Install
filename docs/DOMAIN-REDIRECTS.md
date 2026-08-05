@@ -74,6 +74,35 @@ a **Bulk Redirect List** applied to each source domain's zone:
    A/AAAA record so the redirect rule can intercept the request before DNS
    resolves to any origin.
 
+## Person schema: sameAs
+
+On the canonical site (christianbusch.de), add a `sameAs` array to the
+`Person` JSON-LD block so search engines associate the redirected domains
+and external profiles with the same entity:
+
+```json
+{
+  "@context": "https://schema.org",
+  "@type": "Person",
+  "name": "Christian Busch",
+  "url": "https://christianbusch.de",
+  "sameAs": [
+    "https://christianbusch.org",
+    "https://christianbusch.info",
+    "https://christianbusch.us",
+    "https://christianbusch.net",
+    "https://cbus.ch",
+    "https://www.linkedin.com/in/cbusch",
+    "https://github.com/chsbusch-dot"
+  ]
+}
+```
+
+Note: the canonical URL itself (christianbusch.de) belongs in the `url`
+property, not repeated inside `sameAs` — `sameAs` is for the *other*
+profiles/domains that represent the same entity, which is why it isn't
+listed twice here.
+
 ## Follow-up
 
 - Verify SSL/TLS is issued for every source domain (Cloudflare Universal SSL
@@ -82,3 +111,6 @@ a **Bulk Redirect List** applied to each source domain's zone:
 - After redirects are live, submit a change-of-address / 301 verification in
   Google Search Console for each source domain pointing at
   christianbusch.de.
+- Add the `Person` JSON-LD block above (with `sameAs`) to the christianbusch.de
+  site's `<head>` once the site codebase is available to this repo — no
+  website source exists in this repo to place it in directly.
