@@ -2,8 +2,13 @@
 # SessionStart hook for Claude Code on the web. Two jobs:
 #
 #   1. Bring up a WireGuard tunnel to the home network (WG_* secrets).
-#   2. Provision the home-infrastructure MCP servers declared in .mcp.json
-#      that need an install step (ESXi, iDRAC) or a cache warm-up (UniFi).
+#   2. Generate .mcp.json with the home-infrastructure MCP servers whose
+#      secrets are present (UniFi, ESXi, iDRAC, Hubitat), and provision the
+#      ones that need an install step. Unconfigured services are left out of
+#      .mcp.json entirely, so the session never tries (and fails) to start
+#      them. The file is generated (and gitignored), holds ${VAR} placeholders
+#      rather than secret values, and takes effect when the client next loads
+#      project MCP servers (session start or resume).
 #
 # Everything is driven by environment secrets configured in the Claude Code
 # environment settings:
@@ -27,6 +32,52 @@ fi
 
 trap 'echo "session-start: step failed at line $LINENO - continuing session anyway."; exit 0' ERR
 export DEBIAN_FRONTEND=noninteractive
+
+# --- MCP server registration -------------------------------------------------
+# Write .mcp.json with only the servers whose secrets are configured. Runs
+# before everything else so the registration is correct even if a later
+# provisioning step fails.
+project_dir="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." >/dev/null 2>&1 && pwd)}"
+python3 - "$project_dir/.mcp.json" <<'PYEOF'
+import json, os, sys
+
+servers = {}
+if os.environ.get("UNIFI_HOST") and os.environ.get("UNIFI_API_KEY"):
+    servers["unifi"] = {
+        "command": "uvx",
+        "args": ["--from", "git+https://github.com/pete-builds/mcp-unifi", "mcp-unifi"],
+        "env": {
+            "MCP_TRANSPORT": "stdio",
+            "STUB_MODE": "false",
+            "UNIFI_HOST": "${UNIFI_HOST}",
+            "UNIFI_API_KEY": "${UNIFI_API_KEY}",
+        },
+    }
+if os.environ.get("ESXI_HOST"):
+    servers["esxi"] = {
+        "command": "/usr/local/lib/vcenter-mcp-venv/bin/python",
+        "args": ["-m", "vcenter_mcp"],
+    }
+if os.environ.get("IDRAC_HOST"):
+    servers["idrac"] = {
+        "command": "node",
+        "args": ["/usr/local/lib/mcp-redfish/dist/index.js"],
+        "env": {
+            "REDFISH_HOST": "${IDRAC_HOST}",
+            "REDFISH_USERNAME": "${IDRAC_USER:-root}",
+            "REDFISH_PASSWORD": "${IDRAC_PASSWORD}",
+            "REDFISH_ALLOW_SELF_SIGNED": "true",
+        },
+    }
+if os.environ.get("HUBITAT_MCP_URL"):
+    servers["hubitat"] = {"type": "http", "url": "${HUBITAT_MCP_URL}"}
+
+with open(sys.argv[1], "w") as f:
+    json.dump({"mcpServers": servers}, f, indent=2)
+    f.write("\n")
+
+print("MCP config: registered servers: " + (" ".join(sorted(servers)) or "none"))
+PYEOF
 
 # --- WireGuard tunnel --------------------------------------------------------
 WG_IF="wg0"
@@ -140,8 +191,6 @@ with open(path, "w") as f:
 os.chmod(path, 0o600)
 PYEOF
   echo "MCP esxi: vcenter-mcp ready for $ESXI_HOST."
-else
-  echo "MCP esxi: ESXI_HOST not set - skipped."
 fi
 
 # --- MCP: iDRAC (mcp-redfish) ------------------------------------------------
@@ -155,8 +204,6 @@ if [ -n "${IDRAC_HOST:-}" ]; then
     (cd "$redfish_dir" && npm install --silent >/dev/null 2>&1 && npm run build --silent >/dev/null 2>&1)
   fi
   echo "MCP idrac: mcp-redfish ready for $IDRAC_HOST."
-else
-  echo "MCP idrac: IDRAC_HOST not set - skipped."
 fi
 
 # --- MCP: UniFi (mcp-unifi via uvx) ------------------------------------------
@@ -171,15 +218,6 @@ if [ -n "${UNIFI_HOST:-}" ]; then
   else
     echo "MCP unifi: uvx not found - the unifi server in .mcp.json will not start."
   fi
-else
-  echo "MCP unifi: UNIFI_HOST not set - skipped."
-fi
-
-# --- MCP: Hubitat (MCP Rule Server on the hub, HTTP) -------------------------
-if [ -n "${HUBITAT_MCP_URL:-}" ]; then
-  echo "MCP hubitat: endpoint configured."
-else
-  echo "MCP hubitat: HUBITAT_MCP_URL not set - skipped."
 fi
 
 exit 0
