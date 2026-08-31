@@ -279,6 +279,47 @@ cmd_av() {
     cmd_status
 }
 
+cmd_stop_all() {
+    info "Stopping both GPU stacks (LLM + AV) — leaving the GPU idle…"
+
+    # LLM side first — fastest to stop, frees VRAM immediately.
+    if unit_exists "$LLAMA_SERVICE"; then
+        if llama_is_active; then
+            info "Stopping $LLAMA_SERVICE…"
+            sudo_if_needed systemctl stop "$LLAMA_SERVICE" \
+                || warn "systemctl stop $LLAMA_SERVICE returned non-zero — VRAM may not have been released."
+        else
+            info "$LLAMA_SERVICE already inactive — skipping."
+        fi
+    fi
+
+    # AV side. Same loop shape as cmd_llm's tear-down — keep them in
+    # sync if you touch one.
+    local u
+    while read -r u; do
+        [[ -z "$u" ]] && continue
+        if unit_exists "$u"; then
+            if systemctl is-active --quiet "$u" 2>/dev/null; then
+                info "Stopping $u…"
+                sudo_if_needed systemctl stop "$u" \
+                    || warn "systemctl stop $u returned non-zero — VRAM may not have been released."
+            else
+                info "$u already inactive — skipping."
+            fi
+        fi
+    done < <(av_systemd_units)
+
+    if av_compose_present; then
+        info "Stopping compose AV containers (compose down)…"
+        if ! compose down --remove-orphans; then
+            warn "compose down returned non-zero — some containers may still hold VRAM."
+            warn "Inspect with: docker ps  and  nvidia-smi"
+        fi
+    fi
+
+    cmd_status
+}
+
 cmd_status() {
     printf '\n%s── GPU mode status ──%s\n' "$C_BOLD$C_CYAN" "$C_RESET"
 
@@ -342,6 +383,10 @@ ${C_BOLD}USAGE${C_RESET}
 ${C_BOLD}COMMANDS${C_RESET}
   llm       Stop AV services, start ${LLAMA_SERVICE}. Idempotent.
   av        Stop ${LLAMA_SERVICE}, start AV services. Idempotent.
+  stop-all  Stop both stacks — leave the GPU idle. Idempotent. Use
+            before a reboot, between modes when you don't know which
+            side to switch to next, or to recover from a stuck
+            service (e.g. a NIM stuck in 'activating' restart loop).
   status    Print which side is up + nvidia-smi summary.
   --help    Show this help.
   --version Print version.
@@ -380,6 +425,7 @@ EOF
 case "${1:-}" in
     llm)              cmd_llm ;;
     av)               cmd_av ;;
+    stop-all)         cmd_stop_all ;;
     status)           cmd_status ;;
     -v|--version)     printf 'gpu-mode %s\n' "$GPU_MODE_VERSION" ;;
     -h|--help)        usage ;;
