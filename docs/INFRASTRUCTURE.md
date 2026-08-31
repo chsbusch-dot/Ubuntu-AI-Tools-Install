@@ -15,6 +15,11 @@ Last updated: 2026-07-28
 All domains are consolidated at **Porkbun** and **Cloudflare**, with one
 permanent exception: cbus.ch stays at Dynadot.
 
+Canonical domain for SEO purposes: **christianbusch.de**. All other owned
+domains (christianbusch.org, christianbusch.info, christianbusch.us,
+christianbusch.net, cbus.ch) 301-redirect to it — see
+`docs/DOMAIN-REDIRECTS.md` for the redirect configuration.
+
 | Domain | Registrar / DNS | Notes |
 |---|---|---|
 | mvp.sv | DNS on Cloudflare | Formerly at IONOS (1&1); points to Cloudflare as of July 2026. |
